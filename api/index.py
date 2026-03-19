@@ -28,6 +28,14 @@ from history_db import (
     get_category_aging_pivot,
     get_full_tickets_by_category_bucket,
     init_db,
+    AGENT_LIST,
+    save_attendance,
+    get_attendance,
+    assign_tickets_round_robin,
+    get_agent_assignments,
+    get_agent_summary,
+    update_agent_ticket,
+    reassign_tickets,
 )
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -93,7 +101,7 @@ def make_csv_response(rows, filename):
 sys.path.insert(0, os.path.dirname(__file__))
 try:
     # Try to import from parent
-    from dashboard_server import generate_dashboard_html
+    from dashboard_server import generate_dashboard_html, generate_agent_html
 except Exception:
     def generate_dashboard_html():
         return "<h1>Dashboard loading error. Check server logs.</h1>"
@@ -315,3 +323,94 @@ def api_download_still_pending():
 def api_refresh_master():
     threading.Thread(target=refresh_master_ids, daemon=True).start()
     return jsonify({"status": "refreshing"})
+
+
+# ========== AGENT ROUTES ==========
+
+@app.route("/agent")
+def agent_page():
+    html = generate_agent_html()
+    return Response(html, mimetype="text/html")
+
+
+@app.route("/api/agent/list")
+def api_agent_list():
+    return jsonify({"agents": AGENT_LIST})
+
+
+@app.route("/api/agent/attendance")
+def api_agent_attendance():
+    date = request.args.get("date")
+    if date:
+        return jsonify(get_attendance(date))
+    return jsonify({"error": "date required"}), 400
+
+
+@app.route("/api/agent/assignments")
+def api_agent_assignments():
+    date = request.args.get("date")
+    agent = request.args.get("agent")
+    if date:
+        return jsonify(get_agent_assignments(date, agent))
+    return jsonify({"error": "date required"}), 400
+
+
+@app.route("/api/agent/summary")
+def api_agent_summary():
+    date = request.args.get("date")
+    if date:
+        return jsonify(get_agent_summary(date))
+    return jsonify({"error": "date required"}), 400
+
+
+@app.route("/api/agent/download")
+def api_agent_download():
+    date = request.args.get("date")
+    agent = request.args.get("agent")
+    if date:
+        rows = get_agent_assignments(date, agent)
+        aname = (agent or "all").replace(" ", "_")
+        return make_csv_response(rows, f"agent_tickets_{date}_{aname}.csv")
+    return jsonify({"error": "date required"}), 400
+
+
+@app.route("/api/agent/save-attendance", methods=["POST"])
+def api_save_attendance():
+    data = request.get_json()
+    date = data.get("date")
+    present = data.get("present", [])
+    if date:
+        return jsonify(save_attendance(date, present))
+    return jsonify({"error": "date required"}), 400
+
+
+@app.route("/api/agent/assign", methods=["POST"])
+def api_agent_assign():
+    data = request.get_json()
+    date = data.get("date")
+    present = data.get("present")
+    if date:
+        return jsonify(assign_tickets_round_robin(date, present))
+    return jsonify({"error": "date required"}), 400
+
+
+@app.route("/api/agent/reassign", methods=["POST"])
+def api_agent_reassign():
+    data = request.get_json()
+    date = data.get("date")
+    present = data.get("present", [])
+    if date and present:
+        return jsonify(reassign_tickets(date, present))
+    return jsonify({"error": "date and present required"}), 400
+
+
+@app.route("/api/agent/update-ticket", methods=["POST"])
+def api_agent_update():
+    data = request.get_json()
+    date = data.get("date")
+    ticket_no = data.get("ticket_no")
+    updates = data.get("updates", {})
+    if date and ticket_no:
+        update_agent_ticket(date, ticket_no, updates)
+        return jsonify({"status": "ok"})
+    return jsonify({"error": "date and ticket_no required"}), 400

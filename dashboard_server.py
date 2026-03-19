@@ -32,6 +32,14 @@ from history_db import (
     get_category_aging_pivot,
     get_full_tickets_by_category_bucket,
     init_db,
+    AGENT_LIST,
+    save_attendance,
+    get_attendance,
+    assign_tickets_round_robin,
+    get_agent_assignments,
+    get_agent_summary,
+    update_agent_ticket,
+    reassign_tickets,
 )
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -300,6 +308,90 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/refresh-master":
             threading.Thread(target=refresh_master_ids, daemon=True).start()
             self.send_json({"status": "refreshing"})
+        # ---- Agent Dashboard APIs ----
+        elif path == "/agent":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(generate_agent_html().encode())
+        elif path == "/api/agent/list":
+            self.send_json({"agents": AGENT_LIST})
+        elif path == "/api/agent/attendance":
+            date = params.get("date", [None])[0]
+            if date:
+                self.send_json(get_attendance(date))
+            else:
+                self.send_json({"error": "date required"}, 400)
+        elif path == "/api/agent/assignments":
+            date = params.get("date", [None])[0]
+            agent = params.get("agent", [None])[0]
+            if date:
+                rows = get_agent_assignments(date, agent if agent else None)
+                self.send_json(rows)
+            else:
+                self.send_json({"error": "date required"}, 400)
+        elif path == "/api/agent/summary":
+            date = params.get("date", [None])[0]
+            if date:
+                self.send_json(get_agent_summary(date))
+            else:
+                self.send_json({"error": "date required"}, 400)
+        elif path == "/api/agent/download":
+            date = params.get("date", [None])[0]
+            agent = params.get("agent", [None])[0]
+            if date:
+                rows = get_agent_assignments(date, agent if agent else None)
+                aname = (agent or "all").replace(" ", "_")
+                self.send_csv(rows, f"agent_tickets_{date}_{aname}.csv")
+            else:
+                self.send_json({"error": "date required"}, 400)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        content_len = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_len) if content_len else b""
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            data = {}
+
+        if path == "/api/agent/save-attendance":
+            date = data.get("date")
+            present = data.get("present", [])
+            if date:
+                result = save_attendance(date, present)
+                self.send_json(result)
+            else:
+                self.send_json({"error": "date required"}, 400)
+        elif path == "/api/agent/assign":
+            date = data.get("date")
+            present = data.get("present")
+            if date:
+                result = assign_tickets_round_robin(date, present)
+                self.send_json(result)
+            else:
+                self.send_json({"error": "date required"}, 400)
+        elif path == "/api/agent/reassign":
+            date = data.get("date")
+            present = data.get("present", [])
+            if date and present:
+                result = reassign_tickets(date, present)
+                self.send_json(result)
+            else:
+                self.send_json({"error": "date and present agents required"}, 400)
+        elif path == "/api/agent/update-ticket":
+            date = data.get("date")
+            ticket_no = data.get("ticket_no")
+            updates = data.get("updates", {})
+            if date and ticket_no:
+                update_agent_ticket(date, ticket_no, updates)
+                self.send_json({"status": "ok"})
+            else:
+                self.send_json({"error": "date and ticket_no required"}, 400)
         else:
             self.send_response(404)
             self.end_headers()
@@ -1560,10 +1652,367 @@ init();
 </html>"""
 
 
+def generate_agent_html():
+    agents_json = json.dumps(AGENT_LIST)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PFT Agent Dashboard — Ticket Assignments</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {{
+  --accent: #1a73e8; --green: #10b981; --red: #ef4444; --orange: #f59e0b;
+  --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0; --text: #1e293b; --text2: #64748b;
+}}
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{ font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); font-size:13px; }}
+.topbar {{ background:var(--card); border-bottom:1px solid var(--border); padding:12px 24px; display:flex; align-items:center; gap:16px; position:sticky; top:0; z-index:100; }}
+.topbar h1 {{ font-size:16px; font-weight:700; }}
+.topbar a {{ color:var(--accent); text-decoration:none; font-size:12px; }}
+.container {{ max-width:1600px; margin:0 auto; padding:16px 24px; }}
+.panel {{ background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px 20px; margin-bottom:16px; }}
+.panel-title {{ font-size:13px; font-weight:700; color:var(--text2); text-transform:uppercase; letter-spacing:.5px; margin-bottom:12px; }}
+.row {{ display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; }}
+.row > * {{ flex:1; min-width:200px; }}
+
+/* Attendance */
+.agent-grid {{ display:flex; flex-wrap:wrap; gap:8px; }}
+.agent-chip {{ display:flex; align-items:center; gap:6px; padding:6px 14px; border-radius:20px; border:2px solid var(--border);
+  cursor:pointer; user-select:none; transition:all .2s; font-size:13px; font-weight:500; }}
+.agent-chip:hover {{ border-color:var(--accent); }}
+.agent-chip.present {{ background:#eff6ff; border-color:var(--accent); color:var(--accent); }}
+.agent-chip.present::before {{ content:'\\2713'; font-weight:700; color:var(--green); }}
+.agent-chip.absent {{ background:#fef2f2; border-color:#fca5a5; color:var(--red); opacity:.6; }}
+.agent-chip.absent::before {{ content:'\\2717'; color:var(--red); }}
+
+/* Buttons */
+.btn {{ padding:8px 18px; border-radius:6px; border:1px solid var(--border); background:var(--card); cursor:pointer; font-size:12px; font-weight:600; transition:all .2s; }}
+.btn:hover {{ background:#f1f5f9; }}
+.btn-primary {{ background:var(--accent); color:white; border-color:var(--accent); }}
+.btn-primary:hover {{ background:#1557b0; }}
+.btn-green {{ background:var(--green); color:white; border-color:var(--green); }}
+.btn-green:hover {{ background:#059669; }}
+.btn-sm {{ padding:4px 10px; font-size:11px; }}
+
+/* Summary cards */
+.summary-cards {{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }}
+.scard {{ padding:10px 16px; background:var(--bg); border-radius:8px; border:1px solid var(--border); min-width:120px; text-align:center; }}
+.scard .name {{ font-size:11px; color:var(--text2); font-weight:600; }}
+.scard .count {{ font-size:22px; font-weight:700; color:var(--accent); }}
+
+/* Filter bar */
+.filter-bar {{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }}
+.filter-bar select, .filter-bar input {{ padding:6px 12px; border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit; }}
+.filter-bar select {{ min-width:160px; }}
+
+/* Table */
+.table-wrap {{ overflow-x:auto; border:1px solid var(--border); border-radius:8px; }}
+table {{ width:100%; border-collapse:collapse; font-size:12px; white-space:nowrap; }}
+thead th {{ background:#f1f5f9; padding:8px 10px; text-align:left; font-weight:700; font-size:11px;
+  text-transform:uppercase; letter-spacing:.3px; color:var(--text2); position:sticky; top:0; z-index:2;
+  border-bottom:2px solid var(--border); }}
+tbody td {{ padding:6px 10px; border-bottom:1px solid #f1f5f9; }}
+tbody tr:hover {{ background:#f8fafc; }}
+tbody tr:nth-child(even) {{ background:#fafbfc; }}
+.cell-ticket {{ color:var(--accent); font-weight:600; }}
+.cell-agent {{ font-weight:600; }}
+.aging-high {{ color:var(--red); font-weight:600; }}
+.aging-med {{ color:var(--orange); font-weight:600; }}
+.aging-low {{ color:var(--green); }}
+.status-closed {{ color:var(--green); }}
+.status-pending {{ color:var(--red); font-weight:600; }}
+
+/* Date picker */
+select#datePicker {{ padding:6px 12px; border:1px solid var(--border); border-radius:6px; font-size:13px; font-weight:600; }}
+
+.badge {{ display:inline-block; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; }}
+.badge-green {{ background:#d1fae5; color:#065f46; }}
+.badge-blue {{ background:#dbeafe; color:#1e40af; }}
+.badge-red {{ background:#fee2e2; color:#991b1b; }}
+.loading {{ text-align:center; color:var(--text2); padding:40px; }}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>&#128101; Agent Dashboard — Ticket Assignments</h1>
+  <select id="datePicker" onchange="loadDate(this.value)"></select>
+  <span id="ticketCount" style="font-size:12px;color:var(--text2)"></span>
+  <div style="margin-left:auto;display:flex;gap:8px">
+    <a href="/">&#8592; Main Dashboard</a>
+    <button class="btn btn-sm" onclick="downloadCSV()">&#11015; Download CSV</button>
+  </div>
+</div>
+
+<div class="container">
+  <!-- Attendance Panel -->
+  <div class="panel">
+    <div class="panel-title">&#128203; Agent Attendance — Mark Present</div>
+    <div class="agent-grid" id="attendanceGrid"></div>
+    <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+      <button class="btn btn-primary" onclick="saveAttendanceAndAssign()">&#9989; Save Attendance & Assign Tickets</button>
+      <button class="btn" onclick="reassignTickets()">&#8635; Re-assign (Round Robin)</button>
+      <span id="assignStatus" style="font-size:12px;color:var(--text2)"></span>
+    </div>
+  </div>
+
+  <!-- Summary -->
+  <div class="panel" id="summaryPanel" style="display:none">
+    <div class="panel-title">&#128202; Assignment Summary</div>
+    <div class="summary-cards" id="summaryCards"></div>
+  </div>
+
+  <!-- Filter & Table -->
+  <div class="panel">
+    <div class="filter-bar">
+      <label style="font-weight:600">Filter by Agent:</label>
+      <select id="agentFilter" onchange="filterTable()">
+        <option value="">All Agents</option>
+      </select>
+      <label style="font-weight:600">Search:</label>
+      <input type="text" id="searchBox" placeholder="Ticket No, Customer, Partner..." oninput="filterTable()" style="width:220px">
+      <label style="font-weight:600">Status:</label>
+      <select id="statusFilter" onchange="filterTable()">
+        <option value="">All</option>
+        <option value="Ticket pending">Pending</option>
+        <option value="Ticket Closed">Closed</option>
+      </select>
+      <span id="filterCount" style="font-size:12px;color:var(--text2)"></span>
+    </div>
+    <div class="table-wrap" style="max-height:70vh;overflow-y:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Ticket No</th>
+            <th>Created</th>
+            <th>Customer Name</th>
+            <th>Mapped Partner</th>
+            <th>Current Queue</th>
+            <th>Status</th>
+            <th>Aging</th>
+            <th>Assigned Date</th>
+            <th>Worked By</th>
+            <th>City</th>
+            <th>Zone</th>
+            <th>Device ID</th>
+            <th>Disposition L3</th>
+            <th>Sub Status</th>
+          </tr>
+        </thead>
+        <tbody id="ticketBody">
+          <tr><td colspan="15" class="loading">Select a date to load assignments</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const AGENTS = {agents_json};
+let currentDate = '';
+let allAssignments = [];
+
+async function api(url, opts) {{
+  const r = await fetch(url, opts);
+  return r.json();
+}}
+
+async function init() {{
+  const dates = await api('/api/dates');
+  const sel = document.getElementById('datePicker');
+  dates.forEach(d => {{
+    const opt = document.createElement('option');
+    opt.value = d; opt.textContent = d;
+    sel.appendChild(opt);
+  }});
+  if (dates.length) loadDate(dates[0]);
+}}
+
+async function loadDate(date) {{
+  currentDate = date;
+  document.getElementById('datePicker').value = date;
+
+  // Load attendance
+  const att = await api(`/api/agent/attendance?date=${{date}}`);
+  renderAttendance(att);
+
+  // Load assignments
+  await loadAssignments();
+}}
+
+function renderAttendance(att) {{
+  const grid = document.getElementById('attendanceGrid');
+  grid.innerHTML = AGENTS.map(a => {{
+    const present = att[a] !== false;
+    return `<div class="agent-chip ${{present ? 'present' : 'absent'}}"
+                 onclick="toggleAgent(this, '${{a}}')"
+                 data-agent="${{a}}" data-present="${{present ? '1' : '0'}}">
+              ${{a}}</div>`;
+  }}).join('');
+}}
+
+function toggleAgent(el, name) {{
+  const isPresent = el.dataset.present === '1';
+  el.dataset.present = isPresent ? '0' : '1';
+  el.className = `agent-chip ${{isPresent ? 'absent' : 'present'}}`;
+}}
+
+function getPresentAgents() {{
+  return Array.from(document.querySelectorAll('.agent-chip[data-present="1"]'))
+    .map(el => el.dataset.agent);
+}}
+
+async function saveAttendanceAndAssign() {{
+  const present = getPresentAgents();
+  if (!present.length) {{ alert('Mark at least one agent as present'); return; }}
+  const status = document.getElementById('assignStatus');
+  status.textContent = 'Saving attendance & assigning...';
+
+  await api('/api/agent/save-attendance', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{ date: currentDate, present }})
+  }});
+
+  const result = await api('/api/agent/assign', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{ date: currentDate, present }})
+  }});
+
+  if (result.status === 'assigned') {{
+    status.innerHTML = `<span style="color:var(--green)">&#9989; Assigned ${{result.total}} tickets to ${{result.agents}} agents</span>`;
+  }} else if (result.status === 'already_assigned') {{
+    status.innerHTML = `<span style="color:var(--accent)">Tickets already assigned (${{result.count}}). Use Re-assign to change.</span>`;
+  }} else {{
+    status.innerHTML = `<span style="color:var(--red)">${{result.message || 'Error'}}</span>`;
+  }}
+  await loadAssignments();
+}}
+
+async function reassignTickets() {{
+  const present = getPresentAgents();
+  if (!present.length) {{ alert('Mark at least one agent as present'); return; }}
+  if (!confirm(`Re-assign ALL tickets for ${{currentDate}} among ${{present.length}} agents?\\n\\nThis will clear existing assignments.`)) return;
+
+  const status = document.getElementById('assignStatus');
+  status.textContent = 'Re-assigning...';
+
+  await api('/api/agent/save-attendance', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{ date: currentDate, present }})
+  }});
+
+  const result = await api('/api/agent/reassign', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{ date: currentDate, present }})
+  }});
+
+  if (result.status === 'assigned') {{
+    status.innerHTML = `<span style="color:var(--green)">&#9989; Re-assigned ${{result.total}} tickets to ${{result.agents}} agents</span>`;
+  }}
+  await loadAssignments();
+}}
+
+async function loadAssignments() {{
+  allAssignments = await api(`/api/agent/assignments?date=${{currentDate}}`);
+  document.getElementById('ticketCount').textContent = `${{allAssignments.length}} tickets assigned`;
+
+  // Summary
+  const summary = {{}};
+  allAssignments.forEach(t => {{ summary[t.agent_name] = (summary[t.agent_name] || 0) + 1; }});
+  const panel = document.getElementById('summaryPanel');
+  if (Object.keys(summary).length) {{
+    panel.style.display = '';
+    document.getElementById('summaryCards').innerHTML = Object.entries(summary)
+      .sort((a,b) => b[1] - a[1])
+      .map(([a, c]) => `<div class="scard"><div class="name">${{a}}</div><div class="count">${{c}}</div></div>`)
+      .join('') + `<div class="scard"><div class="name">TOTAL</div><div class="count" style="color:var(--text)">${{allAssignments.length}}</div></div>`;
+  }} else {{
+    panel.style.display = 'none';
+  }}
+
+  // Populate agent filter
+  const sel = document.getElementById('agentFilter');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">All Agents</option>' +
+    AGENTS.filter(a => summary[a]).map(a => `<option value="${{a}}">${{a}} (${{summary[a] || 0}})</option>`).join('');
+  sel.value = current;
+
+  filterTable();
+}}
+
+function filterTable() {{
+  const agent = document.getElementById('agentFilter').value;
+  const search = document.getElementById('searchBox').value.toLowerCase();
+  const status = document.getElementById('statusFilter').value;
+
+  let filtered = allAssignments;
+  if (agent) filtered = filtered.filter(t => t.agent_name === agent);
+  if (status) filtered = filtered.filter(t => (t.status || '').toLowerCase().includes(status.toLowerCase()));
+  if (search) filtered = filtered.filter(t =>
+    (t.ticket_no || '').toLowerCase().includes(search) ||
+    (t.customer_name || '').toLowerCase().includes(search) ||
+    (t.mapped_partner || '').toLowerCase().includes(search) ||
+    (t.device_id || '').toLowerCase().includes(search) ||
+    (t.city || '').toLowerCase().includes(search)
+  );
+
+  document.getElementById('filterCount').textContent = `Showing ${{filtered.length}} of ${{allAssignments.length}}`;
+
+  const tbody = document.getElementById('ticketBody');
+  if (!filtered.length) {{
+    tbody.innerHTML = '<tr><td colspan="15" class="loading">No tickets found</td></tr>';
+    return;
+  }}
+
+  tbody.innerHTML = filtered.map((t, i) => {{
+    const agingClass = (t.aging_bucket || '').includes('120') || (t.aging_bucket || '').includes('72')
+      ? 'aging-high' : (t.aging_bucket || '').includes('48') || (t.aging_bucket || '').includes('36')
+      ? 'aging-med' : 'aging-low';
+    const statusClass = (t.status || '').toLowerCase().includes('closed') ? 'status-closed' : 'status-pending';
+    return `<tr>
+      <td>${{i + 1}}</td>
+      <td class="cell-ticket">${{t.ticket_no || ''}}</td>
+      <td>${{t.created_date || ''}} ${{t.created_time || ''}}</td>
+      <td>${{t.customer_name || ''}}</td>
+      <td>${{t.mapped_partner || ''}}</td>
+      <td>${{t.current_queue || ''}}</td>
+      <td class="${{statusClass}}">${{t.status || ''}}</td>
+      <td class="${{agingClass}}">${{t.aging_bucket || ''}}</td>
+      <td>${{t.assigned_at ? t.assigned_at.split(' ')[0] : ''}}</td>
+      <td class="cell-agent">${{t.agent_name || ''}}</td>
+      <td>${{t.city || ''}}</td>
+      <td>${{t.zone || ''}}</td>
+      <td>${{t.device_id || ''}}</td>
+      <td>${{t.disposition_l3 || ''}}</td>
+      <td>${{t.sub_status || ''}}</td>
+    </tr>`;
+  }}).join('');
+}}
+
+function downloadCSV() {{
+  const agent = document.getElementById('agentFilter').value;
+  const url = `/api/agent/download?date=${{currentDate}}${{agent ? '&agent=' + encodeURIComponent(agent) : ''}}`;
+  window.open(url);
+}}
+
+init();
+</script>
+</body>
+</html>"""
+
+
 def main():
     init_db()
     print(f"Starting PFT Advanced Dashboard on http://localhost:{PORT}")
     print(f"Open http://localhost:{PORT} in your browser")
+    print(f"Agent Dashboard: http://localhost:{PORT}/agent")
     print("Press Ctrl+C to stop.\n")
     server = http.server.HTTPServer(("", PORT), DashboardHandler)
     try:

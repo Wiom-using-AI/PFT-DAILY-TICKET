@@ -131,8 +131,60 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_full_l3 ON full_report_history(report_date, disposition_l3)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_full_l3_bucket ON full_report_history(report_date, disposition_l3, aging_bucket)")
 
+    # Agent attendance table
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS agent_attendance (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_date TEXT NOT NULL,
+            agent_name TEXT NOT NULL,
+            is_present INTEGER DEFAULT 1,
+            UNIQUE(report_date, agent_name)
+        )
+    """)
+
+    # Agent ticket assignments table
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS agent_assignments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_date TEXT NOT NULL,
+            ticket_no TEXT NOT NULL,
+            agent_name TEXT NOT NULL,
+            assigned_at TEXT,
+            created_date TEXT,
+            created_time TEXT,
+            pending_hours REAL,
+            aging_bucket TEXT,
+            customer_name TEXT,
+            mapped_partner TEXT,
+            current_queue TEXT,
+            status TEXT,
+            sub_status TEXT,
+            disposition_l3 TEXT,
+            disposition_l4 TEXT DEFAULT '',
+            phone TEXT DEFAULT '',
+            city TEXT,
+            zone TEXT,
+            device_id TEXT,
+            channel_partner TEXT,
+            reopen_count INTEGER DEFAULT 0,
+            ground_team_update TEXT DEFAULT '',
+            ping_status TEXT DEFAULT '',
+            cx_action TEXT DEFAULT '',
+            px_call_status TEXT DEFAULT '',
+            update_date TEXT DEFAULT '',
+            agent_remark TEXT DEFAULT '',
+            UNIQUE(report_date, ticket_no)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_assign_date ON agent_assignments(report_date)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_assign_agent ON agent_assignments(report_date, agent_name)")
+
     conn.commit()
     conn.close()
+
+
+# Default agent list
+AGENT_LIST = ["Sabir", "Saddam", "Dhananjay", "Nitin", "Deepak", "Vivek", "Sandeep", "Noor"]
 
 
 def parse_datetime_ist(date_str, time_str):
@@ -608,6 +660,202 @@ def get_ticket_trail(ticket_no):
     rows = [dict(r) for r in c.fetchall()]
     conn.close()
     return rows
+
+
+# ==================== AGENT FUNCTIONS ====================
+
+def save_attendance(report_date_str, present_agents):
+    """Save which agents are present for a given date."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    # Clear existing attendance for this date
+    c.execute("DELETE FROM agent_attendance WHERE report_date = ?", (report_date_str,))
+    for agent in AGENT_LIST:
+        is_present = 1 if agent in present_agents else 0
+        c.execute("INSERT INTO agent_attendance (report_date, agent_name, is_present) VALUES (?,?,?)",
+                  (report_date_str, agent, is_present))
+    conn.commit()
+    conn.close()
+    return {"present": present_agents, "total": len(AGENT_LIST)}
+
+
+def get_attendance(report_date_str):
+    """Get attendance for a date. Returns dict of agent_name -> is_present."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT agent_name, is_present FROM agent_attendance WHERE report_date = ?", (report_date_str,))
+    rows = c.fetchall()
+    conn.close()
+    if rows:
+        return {row["agent_name"]: bool(row["is_present"]) for row in rows}
+    # Default: all present
+    return {agent: True for agent in AGENT_LIST}
+
+
+def assign_tickets_round_robin(report_date_str, present_agents=None):
+    """
+    Assign new Internet Issues tickets for the given date to present agents
+    using round-robin allocation. Only assigns tickets that are NOT already
+    in the master sheet (i.e., the 'new' tickets from the morning snapshot).
+    """
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+
+    # Check if already assigned for this date
+    c.execute("SELECT COUNT(*) FROM agent_assignments WHERE report_date = ?", (report_date_str,))
+    existing = c.fetchone()[0]
+    if existing > 0:
+        conn.close()
+        return {"status": "already_assigned", "count": existing}
+
+    # Get present agents
+    if not present_agents:
+        attendance = get_attendance(report_date_str)
+        present_agents = [a for a, p in attendance.items() if p]
+    if not present_agents:
+        conn.close()
+        return {"status": "error", "message": "No agents marked as present"}
+
+    # Get new ticket IDs from master snapshot
+    c.execute("SELECT master_new_ids FROM daily_summary WHERE report_date = ?", (report_date_str,))
+    row = c.fetchone()
+    new_ids = set()
+    if row and row["master_new_ids"]:
+        new_ids = set(x.strip() for x in row["master_new_ids"].split(",") if x.strip())
+
+    # Get the ticket details
+    if new_ids:
+        placeholders = ",".join("?" * len(new_ids))
+        c.execute(f"""
+            SELECT * FROM ticket_history
+            WHERE report_date = ? AND ticket_no IN ({placeholders})
+            ORDER BY pending_hours DESC
+        """, [report_date_str] + list(new_ids))
+    else:
+        # Fallback: use all tickets for the date
+        c.execute("SELECT * FROM ticket_history WHERE report_date = ? ORDER BY pending_hours DESC",
+                  (report_date_str,))
+    tickets = [dict(r) for r in c.fetchall()]
+
+    if not tickets:
+        conn.close()
+        return {"status": "error", "message": "No tickets found for this date"}
+
+    # Round-robin assignment
+    assignments = []
+    now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    for i, ticket in enumerate(tickets):
+        agent = present_agents[i % len(present_agents)]
+        assignments.append((
+            report_date_str,
+            ticket["ticket_no"],
+            agent,
+            now_str,
+            ticket.get("created_date", ""),
+            ticket.get("created_time", ""),
+            ticket.get("pending_hours"),
+            ticket.get("aging_bucket", ""),
+            ticket.get("customer_name", ""),
+            ticket.get("mapped_partner", ""),
+            ticket.get("current_queue", ""),
+            ticket.get("status", ""),
+            ticket.get("sub_status", ""),
+            ticket.get("disposition_l3", ""),
+            "",  # disposition_l4
+            "",  # phone
+            ticket.get("city", ""),
+            ticket.get("zone", ""),
+            ticket.get("device_id", ""),
+            ticket.get("channel_partner", ""),
+        ))
+
+    c.executemany("""
+        INSERT OR REPLACE INTO agent_assignments
+        (report_date, ticket_no, agent_name, assigned_at,
+         created_date, created_time, pending_hours, aging_bucket,
+         customer_name, mapped_partner, current_queue, status, sub_status,
+         disposition_l3, disposition_l4, phone, city, zone, device_id, channel_partner)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, assignments)
+    conn.commit()
+    conn.close()
+
+    # Count per agent
+    agent_counts = {}
+    for _, _, agent, *_ in assignments:
+        agent_counts[agent] = agent_counts.get(agent, 0) + 1
+
+    return {
+        "status": "assigned",
+        "total": len(assignments),
+        "agents": len(present_agents),
+        "per_agent": agent_counts,
+    }
+
+
+def get_agent_assignments(report_date_str, agent_name=None):
+    """Get ticket assignments for a date, optionally filtered by agent."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    if agent_name:
+        c.execute("""SELECT * FROM agent_assignments
+                     WHERE report_date = ? AND agent_name = ?
+                     ORDER BY pending_hours DESC""",
+                  (report_date_str, agent_name))
+    else:
+        c.execute("""SELECT * FROM agent_assignments
+                     WHERE report_date = ? ORDER BY agent_name, pending_hours DESC""",
+                  (report_date_str,))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_agent_summary(report_date_str):
+    """Get assignment count per agent for a date."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""SELECT agent_name, COUNT(*) as count
+                 FROM agent_assignments WHERE report_date = ?
+                 GROUP BY agent_name ORDER BY agent_name""",
+              (report_date_str,))
+    rows = {row["agent_name"]: row["count"] for row in c.fetchall()}
+    conn.close()
+    return rows
+
+
+def update_agent_ticket(report_date_str, ticket_no, updates):
+    """Update agent work fields for a specific ticket."""
+    init_db()
+    allowed = {"ground_team_update", "ping_status", "cx_action",
+               "px_call_status", "update_date", "agent_remark"}
+    filtered = {k: v for k, v in updates.items() if k in allowed}
+    if not filtered:
+        return False
+    conn = get_connection()
+    c = conn.cursor()
+    sets = ", ".join(f"{k} = ?" for k in filtered)
+    vals = list(filtered.values()) + [report_date_str, ticket_no]
+    c.execute(f"UPDATE agent_assignments SET {sets} WHERE report_date = ? AND ticket_no = ?", vals)
+    conn.commit()
+    conn.close()
+    return True
+
+
+def reassign_tickets(report_date_str, present_agents):
+    """Re-assign tickets for a date with new present agents (clears old assignments)."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM agent_assignments WHERE report_date = ?", (report_date_str,))
+    conn.commit()
+    conn.close()
+    return assign_tickets_round_robin(report_date_str, present_agents)
 
 
 if __name__ == "__main__":
