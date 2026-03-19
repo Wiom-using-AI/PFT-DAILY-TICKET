@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Data files (large, regenerated)
+pending_report_*.xlsx
+internet_issues_tickets_*.xlsx
+dashboard_*.html
+
+# Sensitive
+master_ticket_ids.txt
+server.log
+
+# Claude config
+.claude/
+
+# Environment
+.env
+*.env
