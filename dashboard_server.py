@@ -853,72 +853,106 @@ async function loadMasterComparison(date) {{
     const pctNew = s && s.total_internet ? (s.new_to_upload / s.total_internet * 100).toFixed(1) : 0;
     const pctOld = s && s.total_internet ? (s.already_in_master / s.total_internet * 100).toFixed(1) : 0;
 
-    // Compute upload progress
+    // Compute upload progress — only if live data is valid
     let uploadedCount = 0;
     let stillPending = 0;
     let uploadPct = 0;
-    let liveStatus = '';
-    if (s && live && s.snapshot_fixed) {{
-      // How many of the "new" tickets have now been uploaded to master?
+    let liveValid = false;
+    if (s && live && s.snapshot_fixed && live.master_total > 0) {{
       uploadedCount = s.new_to_upload - live.new_to_upload;
-      stillPending = live.new_to_upload;
-      uploadPct = s.new_to_upload > 0 ? Math.round(uploadedCount / s.new_to_upload * 100) : 100;
-      if (stillPending === 0) {{
-        liveStatus = '<span style="color:var(--green);font-weight:700">ALL UPLOADED</span>';
-      }} else {{
-        liveStatus = `<span style="color:var(--orange);font-weight:700">${{stillPending}} still pending</span>`;
+      // Only treat as valid if the math makes sense (no negative values)
+      if (uploadedCount >= 0) {{
+        liveValid = true;
+        stillPending = live.new_to_upload;
+        uploadPct = s.new_to_upload > 0 ? Math.round(uploadedCount / s.new_to_upload * 100) : 100;
       }}
     }}
+    const allUploaded = liveValid && stillPending === 0;
 
     document.getElementById('masterRefreshInfo').textContent =
       s && s.snapshot_fixed
         ? `Snapshot: ${{s.master_refreshed}} (locked)`
         : s && s.master_refreshed ? `Live: ${{s.master_refreshed}}` : '';
 
-    // Determine if all new tickets have been uploaded
-    const allUploaded = live && s && s.snapshot_fixed && stillPending === 0;
-
     document.getElementById('masterContent').innerHTML = `
-      <!-- ROW 1: Live Upload Status (PROMINENT) -->
-      ${{live && s && s.snapshot_fixed ? `
-      <div style="margin-bottom:18px;border-radius:12px;padding:18px 20px;
-        background:${{allUploaded ? 'linear-gradient(135deg,#ecfdf5,#d1fae5)' : 'linear-gradient(135deg,#fff7ed,#ffedd5)'}};
-        border:2px solid ${{allUploaded ? '#10b981' : '#f59e0b'}}">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-          <span style="font-size:${{allUploaded ? '22px' : '18px'}}">${{allUploaded ? '&#9989;' : '&#9203;'}}</span>
-          <span style="font-size:15px;font-weight:700;color:${{allUploaded ? '#065f46' : '#92400e'}}">
-            ${{allUploaded ? 'ALL TICKETS UPLOADED — Nothing Pending!' : 'Upload In Progress'}}</span>
-          <button class="btn btn-sm" onclick="refreshLiveStatus()" style="margin-left:auto;font-size:11px">&#8635; Refresh</button>
+      <!-- Morning Snapshot (Primary — always visible) -->
+      <div style="margin-bottom:6px;display:flex;align-items:center;gap:8px">
+        <span style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">
+          Morning Snapshot (10:15 AM — Locked)</span>
+        <span style="font-size:10px;color:var(--text2)">${{s ? s.master_refreshed : ''}}</span>
+      </div>
+      <div class="cards" style="margin-bottom:16px">
+        <div class="card" style="border-left:3px solid var(--accent)">
+          <div class="card-label">Total Internet Issues</div>
+          <div class="card-value blue">${{s ? s.total_internet.toLocaleString() : '—'}}</div>
+          <div class="card-sub">Filtered from report</div>
         </div>
-        <div class="cards" style="margin-bottom:8px">
+        <div class="card" style="border-left:3px solid var(--text2)">
+          <div class="card-label">Already in Master</div>
+          <div class="card-value" style="color:var(--text2)">${{s ? s.already_in_master.toLocaleString() : '—'}}</div>
+          <div class="card-sub">${{pctOld}}% — Old/existing</div>
+        </div>
+        <div class="card" style="border-left:3px solid var(--green);background:#ecfdf5">
+          <div class="card-label">&#9733; New Tickets to Upload</div>
+          <div class="card-value green">${{s ? s.new_to_upload.toLocaleString() : '—'}}</div>
+          <div class="card-sub">${{pctNew}}% — Not yet in master</div>
+        </div>
+        <div class="card" style="border-left:3px solid var(--border)">
+          <div class="card-label">Master Sheet Total</div>
+          <div class="card-value" style="color:var(--text2);font-size:22px">${{s ? s.master_total.toLocaleString() : '—'}}</div>
+          <div class="card-sub">At time of snapshot</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">
+        <button class="btn btn-download" onclick="window.open('/api/download-new-tickets?date=${{currentDate}}')">
+          &#11015; Download NEW Tickets (${{s ? s.new_to_upload : 0}}) — Full Details CSV
+        </button>
+        <button class="btn btn-sm" onclick="window.open('/api/download-existing-tickets?date=${{currentDate}}')">
+          &#11015; Download Existing (${{s ? s.already_in_master : 0}})
+        </button>
+        <button class="btn btn-sm" onclick="showNewTicketsList()">
+          &#128065; View New Ticket IDs
+        </button>
+      </div>
+
+      <!-- Live Upload Status (only shown when valid data available) -->
+      ${{liveValid ? `
+      <div style="border-top:2px solid var(--border);padding-top:14px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">
+            Live Upload Status</span>
+          <span style="font-size:10px;color:var(--text2)">Last checked: ${{live.master_refreshed || 'now'}}</span>
+          <button class="btn btn-sm" onclick="refreshLiveStatus()" style="margin-left:auto">&#8635; Check Now</button>
+        </div>
+        <div class="cards">
           <div class="card" style="border-left:3px solid ${{allUploaded ? 'var(--green)' : 'var(--orange)'}};
-            background:white">
+            background:${{allUploaded ? '#ecfdf5' : '#fff7ed'}}">
             <div class="card-label">Upload Progress</div>
-            <div class="card-value" style="color:${{allUploaded ? 'var(--green)' : 'var(--orange)'}};font-size:28px">${{uploadPct}}%</div>
+            <div class="card-value" style="color:${{allUploaded ? 'var(--green)' : 'var(--orange)'}}">${{uploadPct}}%</div>
+            <div class="card-sub">${{allUploaded
+              ? '<span style="color:var(--green);font-weight:700">ALL UPLOADED</span>'
+              : '<span style="color:var(--orange);font-weight:700">' + stillPending + ' still pending</span>'}}</div>
             <div style="margin-top:6px">
-              <div class="bar-bg" style="height:10px">
+              <div class="bar-bg" style="height:8px">
                 <div class="bar-fill" style="width:${{uploadPct}}%;background:${{allUploaded ? 'var(--green)' : 'var(--orange)'}}"></div>
               </div>
             </div>
           </div>
-          <div class="card" style="border-left:3px solid var(--green);background:white">
+          <div class="card" style="border-left:3px solid var(--green)">
             <div class="card-label">Uploaded to Master</div>
             <div class="card-value green">${{uploadedCount.toLocaleString()}}</div>
-            <div class="card-sub">of ${{s.new_to_upload.toLocaleString()}} new tickets</div>
+            <div class="card-sub">of ${{s ? s.new_to_upload.toLocaleString() : '?'}} new tickets</div>
           </div>
-          <div class="card" style="border-left:3px solid ${{stillPending > 0 ? 'var(--red)' : 'var(--green)'}};background:white">
-            <div class="card-label">Still Pending</div>
+          <div class="card" style="border-left:3px solid ${{stillPending > 0 ? 'var(--red)' : 'var(--green)'}}">
+            <div class="card-label">Still Pending Upload</div>
             <div class="card-value ${{stillPending > 0 ? 'red' : 'green'}}">${{stillPending.toLocaleString()}}</div>
-            <div class="card-sub">${{stillPending > 0 ? 'Not yet in master' : '&#10004; All done!'}}</div>
+            <div class="card-sub">${{stillPending > 0 ? 'Not yet in master sheet' : 'All done!'}}</div>
           </div>
-          <div class="card" style="border-left:3px solid var(--accent);background:white">
+          <div class="card" style="border-left:3px solid var(--accent)">
             <div class="card-label">Master Sheet Now</div>
             <div class="card-value blue" style="font-size:22px">${{live.master_total.toLocaleString()}}</div>
-            <div class="card-sub">Current total</div>
+            <div class="card-sub">Current total in master</div>
           </div>
-        </div>
-        <div style="font-size:10px;color:${{allUploaded ? '#065f46' : '#92400e'}}">
-          Last checked: ${{live.master_refreshed || 'now'}}
         </div>
         ${{stillPending > 0 ? `
         <div style="margin-top:10px">
@@ -927,50 +961,6 @@ async function loadMasterComparison(date) {{
           </button>
         </div>` : ''}}
       </div>` : ''}}
-
-      <!-- ROW 2: Morning Snapshot (Historical Record) -->
-      <details ${{allUploaded ? '' : 'open'}} style="margin-bottom:6px">
-        <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;padding:8px 0;user-select:none">
-          <span style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">
-            ${{allUploaded ? '&#128203; Morning Record (10:15 AM — Completed)' : '&#128203; Morning Snapshot (10:15 AM — Locked)'}}</span>
-          <span style="font-size:10px;color:var(--text2)">${{s ? s.master_refreshed : ''}}</span>
-          ${{allUploaded ? '<span style="font-size:10px;background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:10px;font-weight:600">&#10004; Completed</span>' : ''}}
-        </summary>
-        <div class="cards" style="margin-bottom:12px;${{allUploaded ? 'opacity:0.7' : ''}}">
-          <div class="card" style="border-left:3px solid var(--accent)">
-            <div class="card-label">Total Internet Issues</div>
-            <div class="card-value blue">${{s ? s.total_internet.toLocaleString() : '—'}}</div>
-            <div class="card-sub">Filtered from report</div>
-          </div>
-          <div class="card" style="border-left:3px solid var(--text2)">
-            <div class="card-label">Already in Master</div>
-            <div class="card-value" style="color:var(--text2)">${{s ? s.already_in_master.toLocaleString() : '—'}}</div>
-            <div class="card-sub">${{pctOld}}% — Old/existing</div>
-          </div>
-          <div class="card" style="border-left:3px solid ${{allUploaded ? 'var(--text2)' : 'var(--green)'}};
-            background:${{allUploaded ? '#f9fafb' : '#ecfdf5'}}">
-            <div class="card-label">${{allUploaded ? 'Were New (Now Uploaded)' : '&#9733; New Tickets to Upload'}}</div>
-            <div class="card-value" style="color:${{allUploaded ? 'var(--text2)' : 'var(--green)'}}">${{s ? s.new_to_upload.toLocaleString() : '—'}}</div>
-            <div class="card-sub">${{allUploaded ? '&#10004; All uploaded to master' : pctNew + '% — Not yet in master'}}</div>
-          </div>
-          <div class="card" style="border-left:3px solid var(--border)">
-            <div class="card-label">Master Sheet Total</div>
-            <div class="card-value" style="color:var(--text2);font-size:22px">${{s ? s.master_total.toLocaleString() : '—'}}</div>
-            <div class="card-sub">At time of snapshot</div>
-          </div>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;${{allUploaded ? 'opacity:0.7' : ''}}">
-          <button class="btn ${{allUploaded ? 'btn-sm' : 'btn-download'}}" onclick="window.open('/api/download-new-tickets?date=${{currentDate}}')">
-            &#11015; Download ${{allUploaded ? 'Uploaded' : 'NEW'}} Tickets (${{s ? s.new_to_upload : 0}}) — CSV
-          </button>
-          <button class="btn btn-sm" onclick="window.open('/api/download-existing-tickets?date=${{currentDate}}')">
-            &#11015; Download Existing (${{s ? s.already_in_master : 0}})
-          </button>
-          <button class="btn btn-sm" onclick="showNewTicketsList()">
-            &#128065; View Ticket IDs
-          </button>
-        </div>
-      </details>
     `;
     window._newTicketIds = s ? (s.new_ticket_ids || []) : [];
   }} catch(e) {{
