@@ -14,6 +14,14 @@ DASHBOARD_URL = "https://pft-daily-ticket.vercel.app"
 SECTION_ID = "categorySection"
 SCREENSHOT_PATH = "ticket_bifurcation.png"
 
+# Only show these 4 categories in the screenshot (others will be unchecked)
+SELECTED_CATEGORIES = [
+    "Internet Issues",
+    "Others",
+    "Shifting Request",
+    "Partner Misbehavior",
+]
+
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "")  # e.g., #pft-reports
@@ -38,9 +46,35 @@ def take_screenshot():
         section = page.locator(f"#{SECTION_ID}")
         section.wait_for(state="visible", timeout=30000)
 
+        # Apply filter: uncheck all categories, then check only the desired ones
+        print(f"[Slack] Applying filter: {SELECTED_CATEGORIES}")
+        selected_json = json.dumps(SELECTED_CATEGORIES)
+        page.evaluate(f"""() => {{
+            const selectedCats = {selected_json};
+            // Uncheck all checkboxes first
+            document.querySelectorAll('#pivotDropdown input[data-cat]').forEach(cb => {{
+                cb.checked = false;
+            }});
+            // Check only the desired categories
+            document.querySelectorAll('#pivotDropdown input[data-cat]').forEach(cb => {{
+                const catName = cb.getAttribute('data-cat');
+                if (selectedCats.includes(catName)) {{
+                    cb.checked = true;
+                }}
+            }});
+            // Update the filter count display
+            const total = document.querySelectorAll('#pivotDropdown input[data-cat]').length;
+            const checked = document.querySelectorAll('#pivotDropdown input[data-cat]:checked').length;
+            const btn = document.querySelector('#pivotFilterBtn');
+            if (btn) btn.innerHTML = '&#9776; Filter Categories <sup>(' + checked + '/' + total + ')</sup> &#9660;';
+            // Apply the filter
+            if (typeof filterPivotTable === 'function') filterPivotTable();
+        }}""")
+        page.wait_for_timeout(1000)
+
         # Scroll to section
         section.scroll_into_view_if_needed()
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(500)
 
         # Take screenshot of just the section
         section.screenshot(path=SCREENSHOT_PATH)
