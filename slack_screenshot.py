@@ -136,7 +136,7 @@ def upload_to_slack(image_path):
         json={
             "files": [{"id": file_id, "title": f"Ticket Bifurcation - {today}"}],
             "channel_id": channel_id,
-            "initial_comment": f":bar_chart: *PFT Daily Ticket Bifurcation Report — {today}*\n\nView full dashboard: {DASHBOARD_URL}",
+            "initial_comment": f"<!here> Please review the pending tickets as of today that are currently under action by the PFT team.\n\n:bar_chart: *PFT Daily Ticket Bifurcation Report — {today}*\n\nView full dashboard: {DASHBOARD_URL}",
         }
     )
     data = resp.json()
