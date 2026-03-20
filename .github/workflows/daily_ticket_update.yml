@@ -13,6 +13,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,13 +33,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git reset --soft origin/main
           git add ticket_history.db
           git add internet_issues_tickets_*.xlsx 2>/dev/null || true
           git add pending_report_*.xlsx 2>/dev/null || true
-          # Only commit if there are changes
           git diff --cached --quiet || git commit -m "Auto-update: Daily ticket data $(date -u +%Y-%m-%d)"
-          git pull --rebase origin main
-          git push
+          git push origin main
 
       # Wait for Vercel to deploy the updated dashboard
       - name: Wait for Vercel deployment
@@ -52,7 +54,7 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
-      - name: Screenshot and post to Slack
+      - name: Post screenshot to Slack
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
