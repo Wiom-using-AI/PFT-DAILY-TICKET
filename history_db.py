@@ -664,6 +664,17 @@ def get_ticket_trail(ticket_no):
 
 # ==================== AGENT FUNCTIONS ====================
 
+def get_agent_dates():
+    """Return all dates that have agent assignments, sorted descending."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT DISTINCT report_date FROM agent_assignments ORDER BY report_date DESC")
+    dates = [row["report_date"] for row in c.fetchall()]
+    conn.close()
+    return dates
+
+
 def save_attendance(report_date_str, present_agents):
     """Save which agents are present for a given date."""
     init_db()

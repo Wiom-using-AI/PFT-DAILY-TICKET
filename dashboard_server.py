@@ -33,6 +33,7 @@ from history_db import (
     get_full_tickets_by_category_bucket,
     init_db,
     AGENT_LIST,
+    get_agent_dates,
     save_attendance,
     get_attendance,
     assign_tickets_round_robin,
@@ -314,6 +315,8 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html")
             self.end_headers()
             self.wfile.write(generate_agent_html().encode())
+        elif path == "/api/agent/dates":
+            self.send_json(get_agent_dates())
         elif path == "/api/agent/list":
             self.send_json({"agents": AGENT_LIST})
         elif path == "/api/agent/attendance":
@@ -544,6 +547,7 @@ def generate_dashboard_html():
 <div class="header">
   <h1><span>PFT</span> Internet Issues Dashboard</h1>
   <div class="header-right">
+    <a href="/agent" class="btn btn-primary" style="background:#7c3aed;border-color:#7c3aed">&#128101; Agent Dashboard</a>
     <a href="{MASTER_SHEET_URL}" target="_blank" class="btn btn-primary">&#128196; Master Sheet</a>
     <button class="btn btn-download" onclick="downloadAll()">&#11015; Download All Data</button>
     <button class="btn" onclick="window.print()">&#128424; Print</button>
@@ -1708,8 +1712,8 @@ body {{ font-family:'Inter',sans-serif; background:var(--bg); color:var(--text);
 .filter-bar select {{ min-width:160px; }}
 
 /* Table */
-.table-wrap {{ overflow-x:auto; border:1px solid var(--border); border-radius:8px; }}
-table {{ width:100%; border-collapse:collapse; font-size:12px; white-space:nowrap; }}
+.table-wrap {{ overflow-x:auto; border:1px solid var(--border); border-radius:8px; max-height:70vh; }}
+table {{ width:100%; border-collapse:collapse; font-size:12px; white-space:nowrap; min-width:1800px; }}
 thead th {{ background:#f1f5f9; padding:8px 10px; text-align:left; font-weight:700; font-size:11px;
   text-transform:uppercase; letter-spacing:.3px; color:var(--text2); position:sticky; top:0; z-index:2;
   border-bottom:2px solid var(--border); }}
@@ -1788,22 +1792,26 @@ select#datePicker {{ padding:6px 12px; border:1px solid var(--border); border-ra
             <th>#</th>
             <th>Ticket No</th>
             <th>Created</th>
+            <th>Phone</th>
+            <th>Disposition L4</th>
             <th>Customer Name</th>
             <th>Mapped Partner</th>
             <th>Current Queue</th>
-            <th>Status</th>
+            <th>Reopen</th>
+            <th>Kapture Status</th>
             <th>Aging</th>
+            <th>Ground Team Update</th>
             <th>Assigned Date</th>
             <th>Worked By</th>
-            <th>City</th>
-            <th>Zone</th>
-            <th>Device ID</th>
-            <th>Disposition L3</th>
-            <th>Sub Status</th>
+            <th>Ping</th>
+            <th>After Call Cx Action</th>
+            <th>Px Call Status</th>
+            <th>Update Date</th>
+            <th>PFT Agent Remark</th>
           </tr>
         </thead>
         <tbody id="ticketBody">
-          <tr><td colspan="15" class="loading">Select a date to load assignments</td></tr>
+          <tr><td colspan="19" class="loading">Select a date to load assignments</td></tr>
         </tbody>
       </table>
     </div>
@@ -1821,7 +1829,7 @@ async function api(url, opts) {{
 }}
 
 async function init() {{
-  const dates = await api('/api/dates');
+  const dates = await api('/api/agent/dates');
   const sel = document.getElementById('datePicker');
   dates.forEach(d => {{
     const opt = document.createElement('option');
@@ -1959,15 +1967,17 @@ function filterTable() {{
     (t.ticket_no || '').toLowerCase().includes(search) ||
     (t.customer_name || '').toLowerCase().includes(search) ||
     (t.mapped_partner || '').toLowerCase().includes(search) ||
-    (t.device_id || '').toLowerCase().includes(search) ||
-    (t.city || '').toLowerCase().includes(search)
+    (t.phone || '').toLowerCase().includes(search) ||
+    (t.disposition_l4 || '').toLowerCase().includes(search) ||
+    (t.agent_remark || '').toLowerCase().includes(search) ||
+    (t.ground_team_update || '').toLowerCase().includes(search)
   );
 
   document.getElementById('filterCount').textContent = `Showing ${{filtered.length}} of ${{allAssignments.length}}`;
 
   const tbody = document.getElementById('ticketBody');
   if (!filtered.length) {{
-    tbody.innerHTML = '<tr><td colspan="15" class="loading">No tickets found</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="19" class="loading">No tickets found</td></tr>';
     return;
   }}
 
@@ -1980,18 +1990,22 @@ function filterTable() {{
       <td>${{i + 1}}</td>
       <td class="cell-ticket">${{t.ticket_no || ''}}</td>
       <td>${{t.created_date || ''}} ${{t.created_time || ''}}</td>
+      <td>${{t.phone || ''}}</td>
+      <td>${{t.disposition_l4 || ''}}</td>
       <td>${{t.customer_name || ''}}</td>
       <td>${{t.mapped_partner || ''}}</td>
       <td>${{t.current_queue || ''}}</td>
+      <td>${{t.reopen_count || 0}}</td>
       <td class="${{statusClass}}">${{t.status || ''}}</td>
       <td class="${{agingClass}}">${{t.aging_bucket || ''}}</td>
+      <td>${{t.ground_team_update || ''}}</td>
       <td>${{t.assigned_at ? t.assigned_at.split(' ')[0] : ''}}</td>
       <td class="cell-agent">${{t.agent_name || ''}}</td>
-      <td>${{t.city || ''}}</td>
-      <td>${{t.zone || ''}}</td>
-      <td>${{t.device_id || ''}}</td>
-      <td>${{t.disposition_l3 || ''}}</td>
-      <td>${{t.sub_status || ''}}</td>
+      <td>${{t.ping_status || ''}}</td>
+      <td>${{t.cx_action || ''}}</td>
+      <td>${{t.px_call_status || ''}}</td>
+      <td>${{t.update_date || ''}}</td>
+      <td>${{t.agent_remark || ''}}</td>
     </tr>`;
   }}).join('');
 }}

@@ -29,6 +29,7 @@ from history_db import (
     get_full_tickets_by_category_bucket,
     init_db,
     AGENT_LIST,
+    get_agent_dates,
     save_attendance,
     get_attendance,
     assign_tickets_round_robin,
@@ -331,6 +332,11 @@ def api_refresh_master():
 def agent_page():
     html = generate_agent_html()
     return Response(html, mimetype="text/html")
+
+
+@app.route("/api/agent/dates")
+def api_agent_dates():
+    return jsonify(get_agent_dates())
 
 
 @app.route("/api/agent/list")
