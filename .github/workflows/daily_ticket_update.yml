@@ -57,16 +57,22 @@ jobs:
       - name: Post screenshot to Slack
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
         run: python slack_screenshot.py
 
-      # Notify on failure
+      # Notify on failure via Slack bot
       - name: Notify Slack on failure
         if: failure()
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
         run: |
-          curl -X POST -H 'Content-type: application/json' \
-            --data '{"text":":x: *PFT Daily Update Failed — '"$(date -u +%Y-%m-%d)"'*\n\nPlease run manually via Claude Code."}' \
-            $SLACK_WEBHOOK_URL
+          python -c "
+          import requests, os
+          from datetime import datetime
+          today = datetime.now().strftime('%Y-%m-%d')
+          resp = requests.post('https://slack.com/api/chat.postMessage',
+            headers={'Authorization': f'Bearer {os.environ[\"SLACK_BOT_TOKEN\"]}', 'Content-Type': 'application/json'},
+            json={'channel': os.environ['SLACK_CHANNEL'], 'text': f':x: *PFT Daily Update Failed — {today}*\nPlease run manually via Claude Code.'})
+          print(resp.json())
+          "
