@@ -636,25 +636,25 @@ def generate_dashboard_html():
 <!-- Date Navigation -->
 <div class="date-nav" id="dateNav">
   <label>View:</label>
-  <button class="date-btn" onclick="navigateDate('latest')">Today</button>
-  <button class="date-btn" onclick="navigateDate(-1)">D-1</button>
-  <button class="date-btn" onclick="navigateDate(-2)">D-2</button>
-  <button class="date-btn" onclick="navigateDate(-3)">D-3</button>
+  <button type="button" class="date-btn" onclick="navigateDate('latest')">Today</button>
+  <button type="button" class="date-btn" onclick="navigateDate(-1)">D-1</button>
+  <button type="button" class="date-btn" onclick="navigateDate(-2)">D-2</button>
+  <button type="button" class="date-btn" onclick="navigateDate(-3)">D-3</button>
   <span style="width:1px;height:20px;background:var(--border);margin:0 2px"></span>
-  <button class="date-btn" onclick="navigatePeriod('wk',0)">Wk-0</button>
-  <button class="date-btn" onclick="navigatePeriod('wk',1)">Wk-1</button>
-  <button class="date-btn" onclick="navigatePeriod('wk',2)">Wk-2</button>
-  <button class="date-btn" onclick="navigatePeriod('wk',3)">Wk-3</button>
+  <button type="button" class="date-btn" onclick="navigatePeriod('wk',0)">Wk-0</button>
+  <button type="button" class="date-btn" onclick="navigatePeriod('wk',1)">Wk-1</button>
+  <button type="button" class="date-btn" onclick="navigatePeriod('wk',2)">Wk-2</button>
+  <button type="button" class="date-btn" onclick="navigatePeriod('wk',3)">Wk-3</button>
   <span style="width:1px;height:20px;background:var(--border);margin:0 2px"></span>
-  <button class="date-btn" onclick="navigatePeriod('m',0)">M-0</button>
-  <button class="date-btn" onclick="navigatePeriod('m',1)">M-1</button>
-  <button class="date-btn" onclick="navigatePeriod('m',2)">M-2</button>
+  <button type="button" class="date-btn" onclick="navigatePeriod('m',0)">M-0</button>
+  <button type="button" class="date-btn" onclick="navigatePeriod('m',1)">M-1</button>
+  <button type="button" class="date-btn" onclick="navigatePeriod('m',2)">M-2</button>
   <span style="width:1px;height:20px;background:var(--border);margin:0 4px"></span>
   <label style="font-size:10px;color:var(--text2);font-weight:600">From:</label>
   <input type="date" id="dateFrom" class="date-select" style="padding:5px 8px;font-size:11px">
   <label style="font-size:10px;color:var(--text2);font-weight:600">To:</label>
   <input type="date" id="dateTo" class="date-select" style="padding:5px 8px;font-size:11px">
-  <button class="date-btn" onclick="applyDateRange()" style="background:var(--accent);color:#fff;border-color:var(--accent);padding:5px 12px">Apply</button>
+  <button type="button" class="date-btn" onclick="applyDateRange()" style="background:var(--accent);color:#fff;border-color:var(--accent);padding:5px 12px">Apply</button>
   <span class="date-info" id="dateInfo">Loading...</span>
 </div>
 
@@ -844,7 +844,32 @@ let filteredTickets = [];
 let drillData = [];
 let charts = {{}};
 
-async function api(path) {{ const r = await fetch(path); return r.json(); }}
+async function api(path) {{
+  try {{
+    const r = await fetch(path);
+    if (!r.ok) return {{ error: 'HTTP ' + r.status }};
+    return await r.json();
+  }} catch(e) {{
+    console.error('API error:', path, e);
+    return {{ error: e.message }};
+  }}
+}}
+
+// Helper: format a Date as YYYY-MM-DD in LOCAL timezone (avoids UTC shift from toISOString)
+function localDateStr(d) {{
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${{y}}-${{m}}-${{day}}`;
+}}
+
+// Helper: format a date string as "Mon 17 Mar" for info bar display
+function shortDate(dateStr) {{
+  const dt = new Date(dateStr + 'T00:00:00');
+  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${{days[dt.getDay()]}} ${{dt.getDate()}} ${{months[dt.getMonth()]}}`;
+}}
 
 // ========== INIT ==========
 async function init() {{
@@ -864,7 +889,7 @@ function navigateDate(offset) {{
   const today = new Date();
   const target = new Date(today);
   target.setDate(target.getDate() + offset); // offset is negative
-  const targetStr = target.toISOString().slice(0, 10);
+  const targetStr = localDateStr(target);
   // Find the closest available date on or before target
   const match = availableDates.find(d => d <= targetStr);
   if (match) loadDate(match);
@@ -874,9 +899,10 @@ function navigateDate(offset) {{
 function navigatePeriod(type, n) {{
   // type='wk' or 'm', n=0 is current, n=1 is previous, etc.
   const today = new Date();
-  let startStr, endStr;
+  let startStr, endStr, periodLabel;
 
   if (type === 'wk') {{
+    periodLabel = `Wk-${{n}}`;
     // Week: Monday-based. Wk-0 = current week Mon..today, Wk-1 = last week Mon..Sun, etc.
     const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon, ...
     const mondayOffset = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // days since Monday
@@ -884,25 +910,26 @@ function navigatePeriod(type, n) {{
     thisMonday.setDate(today.getDate() - mondayOffset);
 
     if (n === 0) {{
-      startStr = thisMonday.toISOString().slice(0, 10);
-      endStr = today.toISOString().slice(0, 10);
+      startStr = localDateStr(thisMonday);
+      endStr = localDateStr(today);
     }} else {{
       const weekStart = new Date(thisMonday);
       weekStart.setDate(thisMonday.getDate() - 7 * n);
       const weekEnd = new Date(weekStart);
       weekEnd.setDate(weekStart.getDate() + 6);
-      startStr = weekStart.toISOString().slice(0, 10);
-      endStr = weekEnd.toISOString().slice(0, 10);
+      startStr = localDateStr(weekStart);
+      endStr = localDateStr(weekEnd);
     }}
   }} else if (type === 'm') {{
+    periodLabel = `M-${{n}}`;
     // Month: M-0 = current month, M-1 = previous month, etc.
     const targetMonth = new Date(today.getFullYear(), today.getMonth() - n, 1);
-    startStr = targetMonth.toISOString().slice(0, 10);
+    startStr = localDateStr(targetMonth);
     if (n === 0) {{
-      endStr = today.toISOString().slice(0, 10);
+      endStr = localDateStr(today);
     }} else {{
       const monthEnd = new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 0);
-      endStr = monthEnd.toISOString().slice(0, 10);
+      endStr = localDateStr(monthEnd);
     }}
   }}
 
@@ -917,8 +944,8 @@ function navigatePeriod(type, n) {{
   document.getElementById('dateFrom').value = startStr;
   document.getElementById('dateTo').value = endStr;
 
-  // Load aggregated data for the range
-  loadDateRange(startStr, endStr);
+  // Load aggregated data for the range with period label
+  loadDateRange(startStr, endStr, periodLabel);
 }}
 
 function applyDateRange() {{
@@ -943,11 +970,11 @@ function applyDateRange() {{
   if (from === to) {{
     loadDate(from);
   }} else {{
-    loadDateRange(from, to);
+    loadDateRange(from, to, 'Custom Range');
   }}
 }}
 
-async function loadDateRange(fromDate, toDate) {{
+async function loadDateRange(fromDate, toDate, periodLabel) {{
   currentRangeMode = true;
   currentRangeFrom = fromDate;
   currentRangeTo = toDate;
@@ -957,10 +984,15 @@ async function loadDateRange(fromDate, toDate) {{
   const datesInRange = availableDates.filter(d => d >= fromDate && d <= toDate);
   const numDays = datesInRange.length;
 
+  // Show loading state
+  const label = periodLabel || 'Range';
+  document.getElementById('dateInfo').textContent = `${{label}} | Loading...`;
+
   // Fetch aggregated summary
   const summary = await api(`/api/summary/range?from=${{fromDate}}&to=${{toDate}}`);
   if (summary.error) {{
     document.getElementById('summaryCards').innerHTML = '<div class="loading">No data for this range</div>';
+    document.getElementById('dateInfo').textContent = `${{label}} | No data`;
     return;
   }}
 
@@ -978,14 +1010,16 @@ async function loadDateRange(fromDate, toDate) {{
   prevTo.setDate(prevTo.getDate() - 1);
   const prevFrom = new Date(prevTo);
   prevFrom.setDate(prevFrom.getDate() - rangeDays + 1);
-  const prevFromStr = prevFrom.toISOString().slice(0, 10);
-  const prevToStr = prevTo.toISOString().slice(0, 10);
+  const prevFromStr = localDateStr(prevFrom);
+  const prevToStr = localDateStr(prevTo);
 
   prevSummary = await api(`/api/summary/range?from=${{prevFromStr}}&to=${{prevToStr}}`);
   if (prevSummary && prevSummary.error) prevSummary = null;
 
+  // Build the year from the toDate for display
+  const toYear = new Date(toDate + 'T00:00:00').getFullYear();
   document.getElementById('dateInfo').textContent =
-    `Range | ${{formatDate(fromDate)}} to ${{formatDate(toDate)}} | ${{numDays}} day(s) of data | Aggregated`;
+    `${{label}} | ${{shortDate(fromDate)}} - ${{shortDate(toDate)}} ${{toYear}} | ${{numDays}} day(s) data | Aggregated`;
 
   // Add report_time field for renderSummary compatibility
   summary.report_time = `${{fromDate}} to ${{toDate}}`;
@@ -1058,7 +1092,7 @@ async function loadCategories(date) {{
       api(`/api/category-aging?date=${{date}}`).catch(() => null),
     ]);
 
-    if ((!cats || Object.keys(cats).length === 0) && !pivot) {{
+    if ((!cats || cats.error || Object.keys(cats).length === 0) && (!pivot || pivot.error)) {{
       document.getElementById('pivotContent').innerHTML = '<div class="loading">No category data available</div>';
       document.getElementById('categorySummaryContent').innerHTML = '<div class="loading">No category data available</div>';
       document.getElementById('distributionChartContent').innerHTML = '<div class="loading">No category data available</div>';
@@ -1307,7 +1341,7 @@ async function loadCategoriesRange(fromDate, toDate) {{
       api(`/api/category-aging/range?from=${{fromDate}}&to=${{toDate}}`).catch(() => null),
     ]);
 
-    if ((!cats || Object.keys(cats).length === 0) && !pivot) {{
+    if ((!cats || cats.error || Object.keys(cats).length === 0) && (!pivot || pivot.error)) {{
       document.getElementById('pivotContent').innerHTML = '<div class="loading">No category data for this range</div>';
       document.getElementById('categorySummaryContent').innerHTML = '<div class="loading">No category data for this range</div>';
       document.getElementById('distributionChartContent').innerHTML = '<div class="loading">No category data for this range</div>';
@@ -2732,7 +2766,7 @@ def main():
     print(f"Open http://localhost:{PORT} in your browser")
     print(f"Agent Dashboard: http://localhost:{PORT}/agent")
     print("Press Ctrl+C to stop.\n")
-    server = http.server.HTTPServer(("", PORT), DashboardHandler)
+    server = http.server.ThreadingHTTPServer(("", PORT), DashboardHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
