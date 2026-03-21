@@ -31,6 +31,9 @@ from history_db import (
     get_category_breakdown,
     get_category_aging_pivot,
     get_full_tickets_by_category_bucket,
+    get_summary_range,
+    get_category_aging_pivot_range,
+    get_category_breakdown_range,
     init_db,
     AGENT_LIST,
     get_agent_dates,
@@ -132,7 +135,23 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 date = dates[0] if dates else None
             if date:
                 summary = get_daily_summary(date)
-                self.send_json(summary if summary else {"error": "No data"})
+                if summary:
+                    # Enrich: if total_pending is missing, use full_report count
+                    if not summary.get("total_pending"):
+                        try:
+                            import sqlite3 as _sq
+                            _conn = _sq.connect(os.path.join(SCRIPT_DIR, "ticket_history.db"))
+                            _c = _conn.cursor()
+                            _c.execute("SELECT COUNT(*) FROM full_report_history WHERE report_date = ?", (date,))
+                            _fr_count = _c.fetchone()[0]
+                            _conn.close()
+                            if _fr_count > 0:
+                                summary["total_pending"] = _fr_count
+                        except Exception:
+                            pass
+                    self.send_json(summary)
+                else:
+                    self.send_json({"error": "No data"})
             else:
                 self.send_json({"error": "No data available"}, 404)
         elif path == "/api/trends":
@@ -309,6 +328,34 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/refresh-master":
             threading.Thread(target=refresh_master_ids, daemon=True).start()
             self.send_json({"status": "refreshing"})
+        # ---- Range Aggregation APIs ----
+        elif path == "/api/summary/range":
+            date_from = params.get("from", [None])[0]
+            date_to = params.get("to", [None])[0]
+            if date_from and date_to:
+                summary = get_summary_range(date_from, date_to)
+                if summary:
+                    self.send_json(summary)
+                else:
+                    self.send_json({"error": "No data in range"}, 404)
+            else:
+                self.send_json({"error": "from and to required"}, 400)
+        elif path == "/api/categories/range":
+            date_from = params.get("from", [None])[0]
+            date_to = params.get("to", [None])[0]
+            if date_from and date_to:
+                cats = get_category_breakdown_range(date_from, date_to)
+                self.send_json(cats)
+            else:
+                self.send_json({"error": "from and to required"}, 400)
+        elif path == "/api/category-aging/range":
+            date_from = params.get("from", [None])[0]
+            date_to = params.get("to", [None])[0]
+            if date_from and date_to:
+                pivot = get_category_aging_pivot_range(date_from, date_to)
+                self.send_json(pivot)
+            else:
+                self.send_json({"error": "from and to required"}, 400)
         # ---- Agent Dashboard APIs ----
         elif path == "/agent":
             self.send_response(200)
@@ -540,6 +587,38 @@ def generate_dashboard_html():
   @media(max-width:600px){{.cards{{grid-template-columns:1fr 1fr}}}}
   .loading{{text-align:center;padding:30px;color:var(--text2);font-weight:500}}
   .pill{{display:inline-block;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:600;margin:1px}}
+
+  /* Dashboard Section Customization */
+  .dashboard-section{{position:relative;transition:opacity .3s,transform .3s}}
+  .dashboard-section.dragging{{opacity:.5;transform:scale(.98)}}
+  .dashboard-section.drag-over{{border-top:3px solid var(--accent);margin-top:-3px}}
+  .section-toolbar{{display:flex;gap:4px;justify-content:flex-end;align-items:center;
+    height:32px;padding:0 10px;background:#f8fafc;border-bottom:1px solid var(--border);
+    border-radius:10px 10px 0 0;margin:-18px -18px 12px -18px}}
+  .section-toolbar button{{width:28px;height:28px;border-radius:6px;border:1px solid transparent;background:transparent;
+    color:#b0b8c4;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;transition:all .15s;padding:0;line-height:1}}
+  .section-toolbar button:hover{{background:#e2e8f0;border-color:var(--border);color:var(--text)}}
+  .section-toolbar button.remove-btn:hover{{background:#fef2f2;border-color:#fecaca;color:var(--red)}}
+  .dashboard-section[draggable="true"]{{cursor:default}}
+  .dashboard-section[draggable="true"] .section-header{{cursor:grab}}
+  .dashboard-section[draggable="true"] .section-header:active{{cursor:grabbing}}
+
+  /* Removed Templates Drawer */
+  .hidden-drawer{{position:fixed;bottom:0;left:20px;z-index:90;font-family:'Inter',system-ui,sans-serif}}
+  .hidden-drawer-toggle{{padding:8px 16px;background:var(--card);border:1px solid var(--border);border-bottom:none;
+    border-radius:10px 10px 0 0;cursor:pointer;font-size:12px;font-weight:600;color:var(--text2);
+    box-shadow:var(--shadow);display:flex;align-items:center;gap:6px;transition:all .2s;user-select:none}}
+  .hidden-drawer-toggle:hover{{background:#f1f5f9;color:var(--text)}}
+  .hidden-drawer-panel{{background:var(--card);border:1px solid var(--border);border-bottom:none;border-radius:10px 10px 0 0;
+    box-shadow:var(--shadow-md);max-height:0;overflow:hidden;transition:max-height .3s ease,padding .3s ease;padding:0 16px}}
+  .hidden-drawer-panel.open{{max-height:300px;padding:12px 16px;overflow-y:auto}}
+  .hidden-drawer-item{{display:flex;align-items:center;justify-content:space-between;padding:8px 0;
+    border-bottom:1px solid var(--border);font-size:12px}}
+  .hidden-drawer-item:last-child{{border-bottom:none}}
+  .hidden-drawer-item span{{color:var(--text);font-weight:500}}
+  .hidden-drawer-item button{{padding:4px 12px;border-radius:6px;border:1px solid #a7f3d0;background:#ecfdf5;
+    color:var(--green);font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}}
+  .hidden-drawer-item button:hover{{background:var(--green);color:#fff;border-color:var(--green)}}
 </style>
 </head>
 <body>
@@ -561,32 +640,96 @@ def generate_dashboard_html():
   <button class="date-btn" onclick="navigateDate(-1)">D-1</button>
   <button class="date-btn" onclick="navigateDate(-2)">D-2</button>
   <button class="date-btn" onclick="navigateDate(-3)">D-3</button>
-  <button class="date-btn" onclick="navigateDate(-5)">D-5</button>
-  <button class="date-btn" onclick="navigateDate(-7)">D-7</button>
-  <button class="date-btn" onclick="navigateDate(-14)">D-14</button>
-  <button class="date-btn" onclick="navigateDate(-30)">D-30</button>
-  <select class="date-select" id="dateSelect" onchange="loadDate(this.value)">
-    <option value="">All dates...</option>
-  </select>
+  <span style="width:1px;height:20px;background:var(--border);margin:0 2px"></span>
+  <button class="date-btn" onclick="navigatePeriod('wk',0)">Wk-0</button>
+  <button class="date-btn" onclick="navigatePeriod('wk',1)">Wk-1</button>
+  <button class="date-btn" onclick="navigatePeriod('wk',2)">Wk-2</button>
+  <button class="date-btn" onclick="navigatePeriod('wk',3)">Wk-3</button>
+  <span style="width:1px;height:20px;background:var(--border);margin:0 2px"></span>
+  <button class="date-btn" onclick="navigatePeriod('m',0)">M-0</button>
+  <button class="date-btn" onclick="navigatePeriod('m',1)">M-1</button>
+  <button class="date-btn" onclick="navigatePeriod('m',2)">M-2</button>
+  <span style="width:1px;height:20px;background:var(--border);margin:0 4px"></span>
+  <label style="font-size:10px;color:var(--text2);font-weight:600">From:</label>
+  <input type="date" id="dateFrom" class="date-select" style="padding:5px 8px;font-size:11px">
+  <label style="font-size:10px;color:var(--text2);font-weight:600">To:</label>
+  <input type="date" id="dateTo" class="date-select" style="padding:5px 8px;font-size:11px">
+  <button class="date-btn" onclick="applyDateRange()" style="background:var(--accent);color:#fff;border-color:var(--accent);padding:5px 12px">Apply</button>
   <span class="date-info" id="dateInfo">Loading...</span>
 </div>
 
 <!-- Summary Cards -->
-<div class="cards" id="summaryCards"><div class="loading">Loading...</div></div>
+<div class="dashboard-section" data-section-id="summaryCards" data-section-label="Summary Cards" draggable="true">
+<div class="section">
+  <div class="section-toolbar">
+    <button onclick="moveSectionUp(this.closest('.dashboard-section'))" title="Move up">&#11014;</button>
+    <button onclick="moveSectionDown(this.closest('.dashboard-section'))" title="Move down">&#11015;</button>
+    <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
+  </div>
+  <div class="cards" id="summaryCards"><div class="loading">Loading...</div></div>
+</div>
+</div>
 
-<!-- Category Bifurcation (All Ticket Types from Email) -->
+<!-- Ticket Bifurcation (Pivot Table) -->
+<div class="dashboard-section" data-section-id="categorySection" data-section-label="Ticket Bifurcation" draggable="true">
 <div class="section" id="categorySection">
+  <div class="section-toolbar">
+    <button onclick="moveSectionUp(this.closest('.dashboard-section'))" title="Move up">&#11014;</button>
+    <button onclick="moveSectionDown(this.closest('.dashboard-section'))" title="Move down">&#11015;</button>
+    <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
+  </div>
   <div class="section-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
     <h3>&#128202; Ticket Bifurcation — All Categories from Email Report</h3>
     <div id="pivotFilterContainer"></div>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="categoryContent">
+  <div id="pivotContent">
     <div class="loading">Loading...</div>
   </div>
 </div>
+</div>
+
+<!-- Category Summary -->
+<div class="dashboard-section" data-section-id="categorySummary" data-section-label="Category Summary" draggable="true">
+<div class="section" id="categorySummarySection">
+  <div class="section-toolbar">
+    <button onclick="moveSectionUp(this.closest('.dashboard-section'))" title="Move up">&#11014;</button>
+    <button onclick="moveSectionDown(this.closest('.dashboard-section'))" title="Move down">&#11015;</button>
+    <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
+  </div>
+  <div class="section-header">
+    <h3>&#128203; Category Summary</h3>
+  </div>
+  <div id="categorySummaryContent">
+    <div class="loading">Loading...</div>
+  </div>
+</div>
+</div>
+
+<!-- Distribution Chart -->
+<div class="dashboard-section" data-section-id="distributionChart" data-section-label="Distribution Chart" draggable="true">
+<div class="section" id="distributionChartSection">
+  <div class="section-toolbar">
+    <button onclick="moveSectionUp(this.closest('.dashboard-section'))" title="Move up">&#11014;</button>
+    <button onclick="moveSectionDown(this.closest('.dashboard-section'))" title="Move down">&#11015;</button>
+    <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
+  </div>
+  <div class="section-header">
+    <h3>&#128200; Distribution Chart</h3>
+  </div>
+  <div id="distributionChartContent">
+    <div class="loading">Loading...</div>
+  </div>
+</div>
+</div>
 
 <!-- Master Sheet Comparison -->
+<div class="dashboard-section" data-section-id="masterComparison" data-section-label="Master Sheet Comparison" draggable="true">
 <div class="section" id="masterSection" style="background:linear-gradient(135deg,#f0f7ff,#e8f0fe);border-left:3px solid var(--accent)">
+  <div class="section-toolbar">
+    <button onclick="moveSectionUp(this.closest('.dashboard-section'))" title="Move up">&#11014;</button>
+    <button onclick="moveSectionDown(this.closest('.dashboard-section'))" title="Move down">&#11015;</button>
+    <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
+  </div>
   <div class="section-header">
     <h3>&#128203; Master Sheet Comparison</h3>
     <div style="display:flex;gap:6px;align-items:center">
@@ -596,6 +739,7 @@ def generate_dashboard_html():
     </div>
   </div>
   <div id="masterContent"><div class="loading">Comparing with master sheet...</div></div>
+</div>
 </div>
 
 <!-- Custom Filter Builder -->
@@ -623,12 +767,19 @@ def generate_dashboard_html():
 <div class="section" id="heatmapSection"></div>
 
 <!-- Charts Row 2: Trends -->
+<div class="dashboard-section" data-section-id="trendChart" data-section-label="Daily Trend Chart" draggable="true">
 <div class="section" id="trendSection">
+  <div class="section-toolbar">
+    <button onclick="moveSectionUp(this.closest('.dashboard-section'))" title="Move up">&#11014;</button>
+    <button onclick="moveSectionDown(this.closest('.dashboard-section'))" title="Move down">&#11015;</button>
+    <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
+  </div>
   <div class="section-header">
     <h3>Daily Trend (All Available Dates)</h3>
     <button class="btn btn-sm btn-download" onclick="downloadSection('trends')">&#11015; CSV</button>
   </div>
   <div class="chart-container" style="height:280px"><canvas id="trendChart"></canvas></div>
+</div>
 </div>
 
 <!-- Charts Row 3: Zone + Partner -->
@@ -645,6 +796,14 @@ def generate_dashboard_html():
 
 <!-- Critical Tickets -->
 <div class="section" id="criticalSection"></div>
+
+<!-- Removed Templates Drawer -->
+<div class="hidden-drawer" id="hiddenDrawer">
+  <div class="hidden-drawer-panel" id="hiddenDrawerPanel"></div>
+  <div class="hidden-drawer-toggle" id="hiddenDrawerToggle" onclick="toggleHiddenDrawer()">
+    &#128230; Removed Templates (<span id="hiddenCount">0</span>)
+  </div>
+</div>
 
 <!-- Ticket Trail Modal -->
 <div class="modal-overlay" id="trailModal">
@@ -676,6 +835,9 @@ const OPERATORS = ['equals','not equals','contains','not contains','greater than
 
 let availableDates = [];
 let currentDate = null;
+let currentRangeMode = false;  // true when showing aggregated range data
+let currentRangeFrom = null;
+let currentRangeTo = null;
 let prevSummary = null;
 let allTickets = [];
 let filteredTickets = [];
@@ -687,14 +849,6 @@ async function api(path) {{ const r = await fetch(path); return r.json(); }}
 // ========== INIT ==========
 async function init() {{
   availableDates = await api('/api/dates');
-  const select = document.getElementById('dateSelect');
-  select.innerHTML = '<option value="">All dates...</option>';
-  availableDates.forEach((d, i) => {{
-    const opt = document.createElement('option');
-    opt.value = d;
-    opt.textContent = i === 0 ? `${{d}} (Latest)` : `${{d}} (D-${{i}})`;
-    select.appendChild(opt);
-  }});
   if (availableDates.length > 0) {{
     loadDate(availableDates[0]);
   }} else {{
@@ -706,14 +860,155 @@ async function init() {{
 
 function navigateDate(offset) {{
   if (offset === 'latest') {{ loadDate(availableDates[0]); return; }}
-  const idx = Math.min(Math.abs(offset), availableDates.length - 1);
-  if (availableDates[idx]) loadDate(availableDates[idx]);
+  // For D-N buttons: calculate the target date as N calendar days ago, then find closest available
+  const today = new Date();
+  const target = new Date(today);
+  target.setDate(target.getDate() + offset); // offset is negative
+  const targetStr = target.toISOString().slice(0, 10);
+  // Find the closest available date on or before target
+  const match = availableDates.find(d => d <= targetStr);
+  if (match) loadDate(match);
+  else if (availableDates.length > 0) loadDate(availableDates[availableDates.length - 1]);
+}}
+
+function navigatePeriod(type, n) {{
+  // type='wk' or 'm', n=0 is current, n=1 is previous, etc.
+  const today = new Date();
+  let startStr, endStr;
+
+  if (type === 'wk') {{
+    // Week: Monday-based. Wk-0 = current week Mon..today, Wk-1 = last week Mon..Sun, etc.
+    const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon, ...
+    const mondayOffset = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // days since Monday
+    const thisMonday = new Date(today);
+    thisMonday.setDate(today.getDate() - mondayOffset);
+
+    if (n === 0) {{
+      startStr = thisMonday.toISOString().slice(0, 10);
+      endStr = today.toISOString().slice(0, 10);
+    }} else {{
+      const weekStart = new Date(thisMonday);
+      weekStart.setDate(thisMonday.getDate() - 7 * n);
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + 6);
+      startStr = weekStart.toISOString().slice(0, 10);
+      endStr = weekEnd.toISOString().slice(0, 10);
+    }}
+  }} else if (type === 'm') {{
+    // Month: M-0 = current month, M-1 = previous month, etc.
+    const targetMonth = new Date(today.getFullYear(), today.getMonth() - n, 1);
+    startStr = targetMonth.toISOString().slice(0, 10);
+    if (n === 0) {{
+      endStr = today.toISOString().slice(0, 10);
+    }} else {{
+      const monthEnd = new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 0);
+      endStr = monthEnd.toISOString().slice(0, 10);
+    }}
+  }}
+
+  // Check if any available dates exist in this range
+  const datesInRange = availableDates.filter(d => d >= startStr && d <= endStr);
+  if (datesInRange.length === 0) {{
+    alert('No data available for this period (' + startStr + ' to ' + endStr + ')');
+    return;
+  }}
+
+  // Update date range pickers to show the period
+  document.getElementById('dateFrom').value = startStr;
+  document.getElementById('dateTo').value = endStr;
+
+  // Load aggregated data for the range
+  loadDateRange(startStr, endStr);
+}}
+
+function applyDateRange() {{
+  const from = document.getElementById('dateFrom').value;
+  const to = document.getElementById('dateTo').value;
+  if (!from || !to) {{
+    alert('Please select both From and To dates');
+    return;
+  }}
+  if (from > to) {{
+    alert('From date must be before To date');
+    return;
+  }}
+  // Check if any data exists in the range
+  const datesInRange = availableDates.filter(d => d >= from && d <= to);
+  if (datesInRange.length === 0) {{
+    alert('No data available in the selected date range (' + from + ' to ' + to + ')');
+    return;
+  }}
+
+  // If it's a single date, load normally; otherwise aggregate
+  if (from === to) {{
+    loadDate(from);
+  }} else {{
+    loadDateRange(from, to);
+  }}
+}}
+
+async function loadDateRange(fromDate, toDate) {{
+  currentRangeMode = true;
+  currentRangeFrom = fromDate;
+  currentRangeTo = toDate;
+  document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
+
+  // Count how many data days are in the range
+  const datesInRange = availableDates.filter(d => d >= fromDate && d <= toDate);
+  const numDays = datesInRange.length;
+
+  // Fetch aggregated summary
+  const summary = await api(`/api/summary/range?from=${{fromDate}}&to=${{toDate}}`);
+  if (summary.error) {{
+    document.getElementById('summaryCards').innerHTML = '<div class="loading">No data for this range</div>';
+    return;
+  }}
+
+  // Use latest date in range for ticket-level data (heatmap, critical, filters, etc.)
+  const latestDateInRange = datesInRange[0]; // already sorted descending
+  currentDate = latestDateInRange;
+  allTickets = await api(`/api/tickets?date=${{latestDateInRange}}`);
+  filteredTickets = [...allTickets];
+
+  // Compute previous period for comparison
+  const fromDt = new Date(fromDate + 'T00:00:00');
+  const toDt = new Date(toDate + 'T00:00:00');
+  const rangeDays = Math.round((toDt - fromDt) / (1000 * 60 * 60 * 24)) + 1;
+  const prevTo = new Date(fromDt);
+  prevTo.setDate(prevTo.getDate() - 1);
+  const prevFrom = new Date(prevTo);
+  prevFrom.setDate(prevFrom.getDate() - rangeDays + 1);
+  const prevFromStr = prevFrom.toISOString().slice(0, 10);
+  const prevToStr = prevTo.toISOString().slice(0, 10);
+
+  prevSummary = await api(`/api/summary/range?from=${{prevFromStr}}&to=${{prevToStr}}`);
+  if (prevSummary && prevSummary.error) prevSummary = null;
+
+  document.getElementById('dateInfo').textContent =
+    `Range | ${{formatDate(fromDate)}} to ${{formatDate(toDate)}} | ${{numDays}} day(s) of data | Aggregated`;
+
+  // Add report_time field for renderSummary compatibility
+  summary.report_time = `${{fromDate}} to ${{toDate}}`;
+
+  renderSummary(summary);
+  renderAging(summary);
+  renderCharts(summary, allTickets);
+  renderHeatmap(allTickets);
+  renderZonePartnerCharts(allTickets);
+  renderCritical(allTickets);
+  resetFilters();
+  loadCategoriesRange(fromDate, toDate);
+  // Hide master comparison for range view (not meaningful for aggregated data)
+  document.getElementById('masterContent').innerHTML =
+    '<div class="loading" style="color:var(--text2)">Master sheet comparison is only available for single-date views.</div>';
 }}
 
 async function loadDate(date) {{
   if (!date) return;
   currentDate = date;
-  document.getElementById('dateSelect').value = date;
+  currentRangeMode = false;
+  currentRangeFrom = null;
+  currentRangeTo = null;
   document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
 
   const idx = availableDates.indexOf(date);
@@ -764,7 +1059,9 @@ async function loadCategories(date) {{
     ]);
 
     if ((!cats || Object.keys(cats).length === 0) && !pivot) {{
-      document.getElementById('categoryContent').innerHTML = '<div class="loading">No category data available</div>';
+      document.getElementById('pivotContent').innerHTML = '<div class="loading">No category data available</div>';
+      document.getElementById('categorySummaryContent').innerHTML = '<div class="loading">No category data available</div>';
+      document.getElementById('distributionChartContent').innerHTML = '<div class="loading">No category data available</div>';
       return;
     }}
 
@@ -789,7 +1086,7 @@ async function loadCategories(date) {{
       }}).join('');
 
       pivotHtml = `
-        <div style="grid-column:1/-1;margin-bottom:12px">
+        <div style="margin-bottom:12px">
           <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
             <table id="pivotTable" style="min-width:100%;border-collapse:collapse">
               <thead><tr id="pivotHead" style="background:#f8fafc;border-bottom:2px solid var(--border)"></tr></thead>
@@ -955,7 +1252,10 @@ async function loadCategories(date) {{
         <div class="chart-container" style="height:280px"><canvas id="categoryChart"></canvas></div></div>`;
     }}
 
-    document.getElementById('categoryContent').innerHTML = pivotHtml + summaryHtml + chartHtml;
+    // Render into separate section containers
+    document.getElementById('pivotContent').innerHTML = pivotHtml || '<div class="loading">No pivot data available</div>';
+    document.getElementById('categorySummaryContent').innerHTML = summaryHtml || '<div class="loading">No category summary data</div>';
+    document.getElementById('distributionChartContent').innerHTML = chartHtml || '<div class="loading">No chart data</div>';
 
     // Render pivot table and inject filter dropdown into section header
     if (window._pivotData) {{
@@ -993,7 +1293,159 @@ async function loadCategories(date) {{
       }});
     }}
   }} catch(e) {{
-    document.getElementById('categoryContent').innerHTML = '<div class="loading">Could not load categories</div>';
+    document.getElementById('pivotContent').innerHTML = '<div class="loading">Could not load categories</div>';
+    document.getElementById('categorySummaryContent').innerHTML = '<div class="loading">Could not load categories</div>';
+    document.getElementById('distributionChartContent').innerHTML = '<div class="loading">Could not load categories</div>';
+  }}
+}}
+
+// ========== RANGE CATEGORIES (aggregated) ==========
+async function loadCategoriesRange(fromDate, toDate) {{
+  try {{
+    const [cats, pivot] = await Promise.all([
+      api(`/api/categories/range?from=${{fromDate}}&to=${{toDate}}`),
+      api(`/api/category-aging/range?from=${{fromDate}}&to=${{toDate}}`).catch(() => null),
+    ]);
+
+    if ((!cats || Object.keys(cats).length === 0) && !pivot) {{
+      document.getElementById('pivotContent').innerHTML = '<div class="loading">No category data for this range</div>';
+      document.getElementById('categorySummaryContent').innerHTML = '<div class="loading">No category data for this range</div>';
+      document.getElementById('distributionChartContent').innerHTML = '<div class="loading">No category data for this range</div>';
+      return;
+    }}
+
+    // Re-use the same rendering logic as loadCategories by setting window._pivotData
+    // and calling filterPivotTable after DOM update
+    let pivotHtml = '';
+    if (pivot && pivot.categories && pivot.categories.length > 0) {{
+      window._pivotData = pivot;
+
+      const buckets = pivot.buckets;
+
+      let dropdownItems = pivot.categories.map(cat => {{
+        const color = CAT_COLORS[cat] || '#94a3b8';
+        return `<label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:12px;white-space:nowrap;transition:background .1s"
+          onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">
+          <input type="checkbox" checked data-cat="${{cat}}" onchange="filterPivotTable()"
+            style="accent-color:${{color}};width:14px;height:14px;cursor:pointer">
+          <span style="width:8px;height:8px;border-radius:50%;background:${{color}};display:inline-block;flex-shrink:0"></span>
+          ${{cat}}
+        </label>`;
+      }}).join('');
+
+      pivotHtml = `
+        <div style="margin-bottom:12px">
+          <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
+            <table id="pivotTable" style="min-width:100%;border-collapse:collapse">
+              <thead><tr id="pivotHead" style="background:#f8fafc;border-bottom:2px solid var(--border)"></tr></thead>
+              <tbody id="pivotBody"></tbody>
+            </table>
+          </div>
+          <div style="font-size:11px;color:var(--text2);margin-top:6px">
+            Aggregated data from ${{fromDate}} to ${{toDate}}
+          </div>
+        </div>`;
+
+      window._pivotFilterDropdown = `
+        <div style="position:relative;display:inline-block" id="pivotFilterWrap">
+          <button onclick="var d=document.getElementById('pivotDropdown');d.style.display=d.style.display==='none'?'block':'none'"
+            style="padding:5px 14px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500;display:flex;align-items:center;gap:6px">
+            &#9776; Filter Categories <span style="font-size:10px;color:#64748b" id="pivotFilterCount">(${{pivot.categories.length}}/${{pivot.categories.length}})</span>
+            <span style="font-size:9px">&#9660;</span>
+          </button>
+          <div id="pivotDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);z-index:50;min-width:280px;max-height:320px;overflow-y:auto">
+            <div style="display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid #e2e8f0;position:sticky;top:0;background:#fff;z-index:1">
+              <button onclick="document.querySelectorAll('#pivotDropdown input[data-cat]').forEach(c=>c.checked=true);filterPivotTable()"
+                style="flex:1;padding:4px 8px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc;cursor:pointer;font-size:11px;font-weight:600">Select All</button>
+              <button onclick="document.querySelectorAll('#pivotDropdown input[data-cat]').forEach(c=>c.checked=false);filterPivotTable()"
+                style="flex:1;padding:4px 8px;border:1px solid #e2e8f0;border-radius:4px;background:#f8fafc;cursor:pointer;font-size:11px;font-weight:600">Deselect All</button>
+            </div>
+            ${{dropdownItems}}
+          </div>
+        </div>`;
+
+      document.addEventListener('click', function(e) {{
+        const wrap = document.getElementById('pivotFilterWrap');
+        const dd = document.getElementById('pivotDropdown');
+        if (wrap && dd && !wrap.contains(e.target)) dd.style.display = 'none';
+      }});
+    }}
+
+    // Summary table + chart
+    let summaryHtml = '';
+    let chartHtml = '';
+    if (cats && Object.keys(cats).length > 0) {{
+      const sorted = Object.entries(cats).sort((a,b) => b[1] - a[1]);
+      const total = sorted.reduce((s, [k,v]) => s + v, 0);
+
+      let tableRows = sorted.map(([cat, count]) => {{
+        const pct = (count / total * 100).toFixed(1);
+        const color = CAT_COLORS[cat] || '#94a3b8';
+        const isInternet = cat === 'Internet Issues';
+        return `<tr style="${{isInternet ? 'background:#eff6ff;font-weight:700' : ''}}">
+          <td><span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}</td>
+          <td class="num">${{count.toLocaleString()}}</td>
+          <td class="num">${{pct}}%</td>
+          <td><div class="bar-bg"><div class="bar-fill" style="width:${{pct}}%;background:${{color}}"></div></div></td>
+        </tr>`;
+      }}).join('');
+
+      tableRows += `<tr style="border-top:2px solid var(--border);font-weight:700">
+        <td>TOTAL</td><td class="num">${{total.toLocaleString()}}</td><td class="num">100%</td><td></td></tr>`;
+
+      summaryHtml = `<div>
+        <div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
+          Category Summary (Aggregated)</div>
+        <table><thead><tr><th>Category (Disposition L3)</th><th style="text-align:right">Tickets</th>
+        <th style="text-align:right">%</th><th>Distribution</th></tr></thead>
+        <tbody>${{tableRows}}</tbody></table></div>`;
+
+      chartHtml = `<div><div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
+        Distribution Chart (Aggregated)</div>
+        <div class="chart-container" style="height:280px"><canvas id="categoryChart"></canvas></div></div>`;
+    }}
+
+    document.getElementById('pivotContent').innerHTML = pivotHtml || '<div class="loading">No pivot data for this range</div>';
+    document.getElementById('categorySummaryContent').innerHTML = summaryHtml || '<div class="loading">No category data</div>';
+    document.getElementById('distributionChartContent').innerHTML = chartHtml || '<div class="loading">No chart data</div>';
+
+    if (window._pivotData) {{
+      const fc = document.getElementById('pivotFilterContainer');
+      if (fc && window._pivotFilterDropdown) fc.innerHTML = window._pivotFilterDropdown;
+      filterPivotTable();
+    }}
+
+    if (cats && Object.keys(cats).length > 0) {{
+      const sorted = Object.entries(cats).sort((a,b) => b[1] - a[1]);
+      if (charts.category) charts.category.destroy();
+      charts.category = new Chart(document.getElementById('categoryChart'), {{
+        type: 'doughnut',
+        data: {{
+          labels: sorted.map(([k]) => k),
+          datasets: [{{
+            data: sorted.map(([,v]) => v),
+            backgroundColor: sorted.map(([k]) => CAT_COLORS[k] || '#94a3b8'),
+            borderWidth: 2,
+            borderColor: '#ffffff',
+          }}]
+        }},
+        options: {{
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: '50%',
+          plugins: {{
+            legend: {{
+              position: 'right',
+              labels: {{ color: '#6b7280', padding: 8, font: {{ size: 10 }}, usePointStyle: true, pointStyle: 'circle' }}
+            }}
+          }}
+        }}
+      }});
+    }}
+  }} catch(e) {{
+    document.getElementById('pivotContent').innerHTML = '<div class="loading">Could not load categories</div>';
+    document.getElementById('categorySummaryContent').innerHTML = '<div class="loading">Could not load categories</div>';
+    document.getElementById('distributionChartContent').innerHTML = '<div class="loading">Could not load categories</div>';
   }}
 }}
 
@@ -1185,7 +1637,7 @@ function renderSummary(s) {{
   document.getElementById('summaryCards').innerHTML = `
     <div class="card" style="border-left:3px solid var(--text2)">
       <div class="card-label">Total Tickets in Email</div>
-      <div class="card-value" style="color:#e2e8f0">${{s.total_pending?.toLocaleString() || 0}}</div>
+      <div class="card-value" style="color:#1a1a2e">${{s.total_pending?.toLocaleString() || 0}}</div>
       <div class="card-sub">All pending tickets received</div>
       ${{delta(s, prevSummary, 'total_pending')}}</div>
     <div class="card" style="border-left:3px solid var(--accent)">
@@ -1717,6 +2169,190 @@ function formatDate(d) {{
   const dt = new Date(d + 'T00:00:00');
   return dt.toLocaleDateString('en-IN', {{day:'numeric',month:'short',year:'numeric',weekday:'short'}});
 }}
+
+// ========== DASHBOARD CUSTOMIZATION ==========
+const LAYOUT_KEY = 'pft_dashboard_layout';
+const DEFAULT_ORDER = ['summaryCards','categorySection','categorySummary','distributionChart','masterComparison','trendChart'];
+
+function getLayout() {{
+  try {{
+    const stored = localStorage.getItem(LAYOUT_KEY);
+    if (stored) {{
+      const layout = JSON.parse(stored);
+      if (layout.order && Array.isArray(layout.order) && layout.hidden && Array.isArray(layout.hidden)) {{
+        // Ensure all section IDs are present
+        const allIds = DEFAULT_ORDER.slice();
+        layout.order.forEach(id => {{ if (!allIds.includes(id)) allIds.push(id); }});
+        allIds.forEach(id => {{ if (!layout.order.includes(id) && !layout.hidden.includes(id)) layout.order.push(id); }});
+        return layout;
+      }}
+    }}
+  }} catch(e) {{}}
+  return {{ order: DEFAULT_ORDER.slice(), hidden: [] }};
+}}
+
+function saveLayout() {{
+  const container = document.getElementById('sectionContainer');
+  if (!container) return;
+  const sections = container.querySelectorAll('.dashboard-section');
+  const order = Array.from(sections).map(s => s.dataset.sectionId);
+  const hidden = [];
+  document.querySelectorAll('.dashboard-section[data-hidden="true"]').forEach(s => {{
+    if (!order.includes(s.dataset.sectionId)) order.push(s.dataset.sectionId);
+    hidden.push(s.dataset.sectionId);
+  }});
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify({{ order, hidden }}));
+  updateHiddenDrawer();
+}}
+
+function applySavedLayout() {{
+  const layout = getLayout();
+  const container = document.getElementById('sectionContainer');
+  if (!container) return;
+
+  const sectionMap = {{}};
+  container.querySelectorAll('.dashboard-section').forEach(s => {{
+    sectionMap[s.dataset.sectionId] = s;
+  }});
+
+  // Reorder
+  layout.order.forEach(id => {{
+    const el = sectionMap[id];
+    if (el) container.appendChild(el);
+  }});
+
+  // Hide
+  layout.hidden.forEach(id => {{
+    const el = sectionMap[id];
+    if (el) {{
+      el.style.display = 'none';
+      el.dataset.hidden = 'true';
+    }}
+  }});
+
+  updateHiddenDrawer();
+}}
+
+function moveSectionUp(section) {{
+  const prev = section.previousElementSibling;
+  if (prev && prev.classList.contains('dashboard-section')) {{
+    section.parentNode.insertBefore(section, prev);
+    saveLayout();
+  }}
+}}
+
+function moveSectionDown(section) {{
+  const next = section.nextElementSibling;
+  if (next && next.classList.contains('dashboard-section')) {{
+    section.parentNode.insertBefore(next, section);
+    saveLayout();
+  }}
+}}
+
+function hideSection(section) {{
+  section.style.display = 'none';
+  section.dataset.hidden = 'true';
+  saveLayout();
+}}
+
+function restoreSection(sectionId) {{
+  const section = document.querySelector(`.dashboard-section[data-section-id="${{sectionId}}"]`);
+  if (section) {{
+    section.style.display = '';
+    section.dataset.hidden = 'false';
+    saveLayout();
+  }}
+}}
+
+function updateHiddenDrawer() {{
+  const hiddenSections = document.querySelectorAll('.dashboard-section[data-hidden="true"]');
+  const count = hiddenSections.length;
+  document.getElementById('hiddenCount').textContent = count;
+
+  const panel = document.getElementById('hiddenDrawerPanel');
+  if (count === 0) {{
+    panel.innerHTML = '<div style="padding:4px 0;color:var(--text2);font-size:12px">No removed templates</div>';
+    if (panel.classList.contains('open')) panel.classList.remove('open');
+  }} else {{
+    panel.innerHTML = Array.from(hiddenSections).map(s => {{
+      return `<div class="hidden-drawer-item">
+        <span>${{s.dataset.sectionLabel || s.dataset.sectionId}}</span>
+        <button onclick="restoreSection('${{s.dataset.sectionId}}')">+ Restore</button>
+      </div>`;
+    }}).join('');
+  }}
+}}
+
+function toggleHiddenDrawer() {{
+  const panel = document.getElementById('hiddenDrawerPanel');
+  panel.classList.toggle('open');
+}}
+
+// ---- Drag & Drop ----
+let draggedSection = null;
+
+function initDragDrop() {{
+  document.querySelectorAll('.dashboard-section').forEach(section => {{
+    section.addEventListener('dragstart', function(e) {{
+      // Only allow drag from section-header area
+      const header = section.querySelector('.section-header') || section.querySelector('.cards');
+      if (!header) {{ e.preventDefault(); return; }}
+      draggedSection = section;
+      section.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', section.dataset.sectionId);
+    }});
+
+    section.addEventListener('dragend', function() {{
+      section.classList.remove('dragging');
+      document.querySelectorAll('.dashboard-section.drag-over').forEach(s => s.classList.remove('drag-over'));
+      draggedSection = null;
+      saveLayout();
+    }});
+
+    section.addEventListener('dragover', function(e) {{
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (draggedSection && draggedSection !== section) {{
+        section.classList.add('drag-over');
+      }}
+    }});
+
+    section.addEventListener('dragleave', function() {{
+      section.classList.remove('drag-over');
+    }});
+
+    section.addEventListener('drop', function(e) {{
+      e.preventDefault();
+      section.classList.remove('drag-over');
+      if (draggedSection && draggedSection !== section) {{
+        const container = section.parentNode;
+        const allSections = Array.from(container.querySelectorAll('.dashboard-section'));
+        const dragIdx = allSections.indexOf(draggedSection);
+        const dropIdx = allSections.indexOf(section);
+        if (dragIdx < dropIdx) {{
+          container.insertBefore(draggedSection, section.nextSibling);
+        }} else {{
+          container.insertBefore(draggedSection, section);
+        }}
+      }}
+    }});
+  }});
+}}
+
+// Wrap sections in a container on DOMContentLoaded
+(function() {{
+  const sections = document.querySelectorAll('.dashboard-section');
+  if (sections.length === 0) return;
+  const parent = sections[0].parentNode;
+  const container = document.createElement('div');
+  container.id = 'sectionContainer';
+  // Insert container before first dashboard-section
+  parent.insertBefore(container, sections[0]);
+  sections.forEach(s => container.appendChild(s));
+  applySavedLayout();
+  initDragDrop();
+}})();
 
 init();
 </script>

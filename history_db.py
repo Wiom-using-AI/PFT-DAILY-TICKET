@@ -607,6 +607,117 @@ def get_available_dates():
     return dates
 
 
+def get_summary_range(date_from, date_to):
+    """Get aggregated (summed) summary across a date range.
+    Returns a dict with the same keys as a single daily_summary but summed."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT
+            COUNT(*) as num_days,
+            GROUP_CONCAT(report_date) as dates_included,
+            SUM(total_pending) as total_pending,
+            SUM(total_internet) as total_internet,
+            SUM(created_today) as created_today,
+            SUM(critical_gt48h) as critical_gt48h,
+            SUM(bucket_lt4h) as bucket_lt4h,
+            SUM(bucket_4_12h) as bucket_4_12h,
+            SUM(bucket_12_24h) as bucket_12_24h,
+            SUM(bucket_24_36h) as bucket_24_36h,
+            SUM(bucket_36_48h) as bucket_36_48h,
+            SUM(bucket_48_72h) as bucket_48_72h,
+            SUM(bucket_72_120h) as bucket_72_120h,
+            SUM(bucket_gt120h) as bucket_gt120h,
+            SUM(queue_partner) as queue_partner,
+            SUM(queue_cx_high_pain) as queue_cx_high_pain,
+            SUM(queue_px_send_wiom) as queue_px_send_wiom,
+            SUM(master_total) as master_total,
+            SUM(master_already) as master_already,
+            SUM(master_new) as master_new
+        FROM daily_summary
+        WHERE report_date >= ? AND report_date <= ?
+    """, (date_from, date_to))
+    row = c.fetchone()
+    conn.close()
+    if not row or row["num_days"] == 0:
+        return None
+    return dict(row)
+
+
+def get_category_aging_pivot_range(date_from, date_to):
+    """Get aggregated pivot table across a date range.
+    Same structure as get_category_aging_pivot but summed across dates."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT disposition_l3, aging_bucket, COUNT(*) as cnt
+        FROM full_report_history
+        WHERE report_date >= ? AND report_date <= ?
+        GROUP BY disposition_l3, aging_bucket
+    """, (date_from, date_to))
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        return {}
+
+    data = {}
+    for row in rows:
+        cat = row["disposition_l3"] or "Unknown"
+        db_bucket = row["aging_bucket"] or "Unknown"
+        cnt = row["cnt"]
+        if cat not in data:
+            data[cat] = {}
+        for pivot_label, db_labels in PIVOT_BUCKETS:
+            if db_bucket in db_labels:
+                data[cat][pivot_label] = data[cat].get(pivot_label, 0) + cnt
+                break
+
+    totals_by_cat = {cat: sum(buckets.values()) for cat, buckets in data.items()}
+    sorted_cats = sorted(totals_by_cat.keys(), key=lambda c: totals_by_cat[c], reverse=True)
+
+    totals_by_bucket = {}
+    for b_label in PIVOT_BUCKET_LABELS:
+        totals_by_bucket[b_label] = sum(data.get(cat, {}).get(b_label, 0) for cat in sorted_cats)
+
+    grand_total = sum(totals_by_cat.values())
+
+    return {
+        "categories": sorted_cats,
+        "buckets": PIVOT_BUCKET_LABELS,
+        "data": data,
+        "totals_by_cat": totals_by_cat,
+        "totals_by_bucket": totals_by_bucket,
+        "grand_total": grand_total,
+    }
+
+
+def get_category_breakdown_range(date_from, date_to):
+    """Get aggregated category breakdown across a date range."""
+    import json
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT report_date, category_breakdown FROM daily_summary
+        WHERE report_date >= ? AND report_date <= ?
+    """, (date_from, date_to))
+    rows = c.fetchall()
+    conn.close()
+
+    aggregated = {}
+    for row in rows:
+        if row["category_breakdown"]:
+            try:
+                cats = json.loads(row["category_breakdown"])
+                for cat, count in cats.items():
+                    aggregated[cat] = aggregated.get(cat, 0) + count
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return aggregated
+
+
 def get_daily_summary(report_date):
     """Get summary for a specific date."""
     conn = get_connection()
