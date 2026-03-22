@@ -1398,7 +1398,8 @@ async function loadCategoryDailyTrend(overrideFrom, overrideTo) {{
     // Close dropdown when clicking outside
     document.addEventListener('click', function(e) {{
       const dd = document.getElementById('catTrendDropdown');
-      if (dd && !dd.closest('div').contains(e.target)) dd.classList.remove('show');
+      const container = document.getElementById('catTrendFilterContainer');
+      if (dd && container && !container.contains(e.target)) dd.classList.remove('show');
     }});
 
   }} catch(e) {{
