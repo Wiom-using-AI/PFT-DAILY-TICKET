@@ -584,6 +584,7 @@ def generate_dashboard_html():
   .modal-overlay{{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.4);
     backdrop-filter:blur(4px);z-index:100;align-items:center;justify-content:center}}
   .modal-overlay.show{{display:flex}}
+  .show{{display:block!important}}
   .modal{{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;
     max-width:90vw;width:950px;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.15)}}
   .modal h2{{font-size:16px;margin-bottom:16px;font-weight:700;color:var(--text)}}
@@ -708,6 +709,7 @@ def generate_dashboard_html():
   <div class="section-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
     <h3>&#128202; Category Summary &mdash; Daily Trend</h3>
     <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      <div id="catTrendFilterContainer" style="margin-right:8px"></div>
       <label style="font-size:11px;color:var(--text2);font-weight:600">FROM</label>
       <input type="date" id="catTrendFrom" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:inherit">
       <label style="font-size:11px;color:var(--text2);font-weight:600">TO</label>
@@ -1360,9 +1362,67 @@ async function loadCategoryDailyTrend(overrideFrom, overrideTo) {{
       </div>`;
 
     container.innerHTML = tableHtml;
+
+    // Build filter dropdown (same style as pivot table filter)
+    const checkedCount = catNames.length;
+    const totalCount = catNames.length;
+    let filterItems = '';
+    catNames.forEach(cat => {{
+      const color = CAT_COLORS[cat] || '#94a3b8';
+      filterItems += `<label style="display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer;font-size:12px;white-space:nowrap">
+        <input type="checkbox" checked data-cattrend="${{cat}}" onchange="filterCatTrend()"
+               style="accent-color:${{color}};cursor:pointer"> ${{cat}}
+      </label>`;
+    }});
+
+    const filterHtml = `
+      <div style="position:relative;display:inline-block">
+        <button onclick="document.getElementById('catTrendDropdown').classList.toggle('show')"
+                style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px">
+          &#9776; Filter Categories <span id="catTrendFilterCount">(${{checkedCount}}/${{totalCount}})</span> &#9660;
+        </button>
+        <div id="catTrendDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:220px;max-height:300px;overflow-y:auto">
+          <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
+            <button onclick="document.querySelectorAll('#catTrendDropdown input[data-cattrend]').forEach(c=>c.checked=true);filterCatTrend()"
+                    style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">Select All</button>
+            <button onclick="document.querySelectorAll('#catTrendDropdown input[data-cattrend]').forEach(c=>c.checked=false);filterCatTrend()"
+                    style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">Deselect All</button>
+          </div>
+          ${{filterItems}}
+        </div>
+      </div>`;
+
+    const fc = document.getElementById('catTrendFilterContainer');
+    if (fc) fc.innerHTML = filterHtml;
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function(e) {{
+      const dd = document.getElementById('catTrendDropdown');
+      if (dd && !dd.closest('div').contains(e.target)) dd.classList.remove('show');
+    }});
+
   }} catch(e) {{
     container.innerHTML = '<div class="loading">Could not load category trend</div>';
   }}
+}}
+
+// Show/hide category rows in the daily trend table
+window.filterCatTrend = function() {{
+  const checked = Array.from(document.querySelectorAll('#catTrendDropdown input[data-cattrend]:checked')).map(c => c.getAttribute('data-cattrend'));
+  const total = document.querySelectorAll('#catTrendDropdown input[data-cattrend]').length;
+  document.getElementById('catTrendFilterCount').textContent = `(${{checked.length}}/${{total}})`;
+
+  // Get the table in categorySummaryContent
+  const table = document.querySelector('#categorySummaryContent table');
+  if (!table) return;
+  const rows = table.querySelectorAll('tbody tr');
+  rows.forEach(row => {{
+    const firstTd = row.querySelector('td');
+    if (!firstTd) return;
+    const text = firstTd.textContent.trim().replace(' ★', '');
+    if (text === 'TOTAL') return; // always show total
+    row.style.display = checked.includes(text) ? '' : 'none';
+  }});
 }}
 
 // Apply the section's own date range filter
