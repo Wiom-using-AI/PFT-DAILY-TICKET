@@ -506,32 +506,27 @@ def save_full_report(full_xlsx_path, report_date_str, report_time_ist):
 def cleanup_old_data():
     """
     Remove old data to keep the database small. Runs after each daily save.
-    - Ticket-level data (full_report_history, ticket_history): 30 days
-    - Daily summary numbers (daily_summary): 90 days
+    - Ticket-level data (full_report_history, ticket_history): 45 days
+    - Daily summary numbers (daily_summary): kept forever
     """
     conn = get_connection()
     c = conn.cursor()
-    cutoff_30 = (datetime.now(IST) - timedelta(days=30)).strftime("%Y-%m-%d")
-    cutoff_90 = (datetime.now(IST) - timedelta(days=90)).strftime("%Y-%m-%d")
+    cutoff_45 = (datetime.now(IST) - timedelta(days=45)).strftime("%Y-%m-%d")
 
-    # Ticket-level data: keep 30 days
-    c.execute("DELETE FROM full_report_history WHERE report_date < ?", (cutoff_30,))
+    # Ticket-level data: keep 45 days
+    c.execute("DELETE FROM full_report_history WHERE report_date < ?", (cutoff_45,))
     del_full = c.rowcount
-    c.execute("DELETE FROM ticket_history WHERE report_date < ?", (cutoff_30,))
+    c.execute("DELETE FROM ticket_history WHERE report_date < ?", (cutoff_45,))
     del_tickets = c.rowcount
 
-    # Daily summary numbers: keep 90 days
-    c.execute("DELETE FROM daily_summary WHERE report_date < ?", (cutoff_90,))
-    del_summary = c.rowcount
-
-    total_deleted = del_full + del_tickets + del_summary
+    total_deleted = del_full + del_tickets
     if total_deleted > 0:
         conn.commit()
         conn.execute("VACUUM")
-        print(f"[Cleanup] Removed {del_full + del_tickets} ticket rows (>30d) + {del_summary} summary rows (>90d)")
+        print(f"[Cleanup] Removed {del_full + del_tickets} ticket rows older than 45 days")
     else:
         conn.commit()
-        print(f"[Cleanup] No old data to remove (tickets cutoff: {cutoff_30}, summary cutoff: {cutoff_90})")
+        print(f"[Cleanup] No old data to remove (cutoff: {cutoff_45})")
     conn.close()
 
 
