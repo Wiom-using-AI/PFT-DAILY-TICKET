@@ -727,7 +727,7 @@ def generate_dashboard_html():
 
       <h3 style="color:#1a1a2e;border-bottom:2px solid #10b981;padding-bottom:4px">&#128451; Data Storage Rules</h3>
       <ol start="7">
-        <li><b>Ticket-level data (raw rows):</b> Keep for <b>45 days</b> only, then auto-delete</li>
+        <li><b>Ticket-level data (raw rows):</b> Keep for <b>7 days</b> only, then auto-delete</li>
         <li><b>Daily summary numbers:</b> Keep <b>forever</b> (infinite retention) &mdash; only ~1 KB per day</li>
         <li><b>Router Pickup:</b> Do NOT store individual ticket rows &mdash; only keep the <b>daily count</b> in category breakdown</li>
         <li><b>All other categories</b> (Internet Issues, Refund, Payment Issues, etc.): Store full ticket-level data</li>
@@ -791,7 +791,7 @@ def generate_dashboard_html():
         <li>Save daily snapshot to database (ticket_history + daily_summary)</li>
         <li>Extract category breakdown + save full report (all categories except Router Pickup)</li>
         <li>Fetch master sheet &rarr; compare &rarr; save snapshot &rarr; cache new tickets CSV</li>
-        <li>Cleanup old data (45-day ticket purge + expired cache removal)</li>
+        <li>Cleanup old data (7-day ticket purge + expired cache removal)</li>
       </ol>
 
       <h3 style="color:#1a1a2e;border-bottom:2px solid #e11d48;padding-bottom:4px">&#128231; Gmail Configuration</h3>

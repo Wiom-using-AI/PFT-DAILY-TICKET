@@ -561,32 +561,34 @@ def cleanup_expired_cache():
 def cleanup_old_data():
     """
     Remove old data to keep the database small. Runs after each daily save.
-    - Ticket-level data (full_report_history, ticket_history): 45 days
-    - Daily summary numbers (daily_summary): kept forever
+    - Ticket-level data (full_report_history, ticket_history, agent_assignments): 7 days
+    - Daily summary numbers (daily_summary): kept forever (infinite)
     """
     conn = get_connection()
     c = conn.cursor()
-    cutoff_45 = (datetime.now(IST) - timedelta(days=45)).strftime("%Y-%m-%d")
+    cutoff_7 = (datetime.now(IST) - timedelta(days=7)).strftime("%Y-%m-%d")
 
-    # Ticket-level data: keep 45 days
-    c.execute("DELETE FROM full_report_history WHERE report_date < ?", (cutoff_45,))
+    # Ticket-level data: keep 7 days only
+    c.execute("DELETE FROM full_report_history WHERE report_date < ?", (cutoff_7,))
     del_full = c.rowcount
-    c.execute("DELETE FROM ticket_history WHERE report_date < ?", (cutoff_45,))
+    c.execute("DELETE FROM ticket_history WHERE report_date < ?", (cutoff_7,))
     del_tickets = c.rowcount
+    c.execute("DELETE FROM agent_assignments WHERE report_date < ?", (cutoff_7,))
+    del_assign = c.rowcount
 
     # Clean expired new tickets cache (previous days)
     today = datetime.now(IST).strftime("%Y-%m-%d")
     c.execute("DELETE FROM new_tickets_cache WHERE report_date < ?", (today,))
     del_cache = c.rowcount
 
-    total_deleted = del_full + del_tickets
+    total_deleted = del_full + del_tickets + del_assign
     if total_deleted > 0 or del_cache > 0:
         conn.commit()
         conn.execute("VACUUM")
-        print(f"[Cleanup] Removed {del_full + del_tickets} ticket rows older than 45 days, {del_cache} expired cache entries")
+        print(f"[Cleanup] Removed {del_full + del_tickets} ticket rows, {del_assign} assignments older than 7 days, {del_cache} expired cache entries")
     else:
         conn.commit()
-        print(f"[Cleanup] No old data to remove (cutoff: {cutoff_45})")
+        print(f"[Cleanup] No old data to remove (cutoff: {cutoff_7})")
     conn.close()
 
 

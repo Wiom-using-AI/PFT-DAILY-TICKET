@@ -9,7 +9,7 @@
 6. **Deadline**: If no email by 12:00 PM, stop retrying and log a failure message
 
 ## Data Storage Rules
-7. **Ticket-level data (raw rows)**: Keep for **45 days** only, then auto-delete
+7. **Ticket-level data (raw rows)**: Keep for **7 days** only, then auto-delete
 8. **Daily summary numbers**: Keep **forever** (infinite retention) — only ~1 KB per day
 9. **Router Pickup**: Do NOT store individual ticket rows — only keep the **daily count** in category breakdown
 10. **All other categories** (Internet Issues, Refund, Payment Issues, etc.): Store full ticket-level data
@@ -61,7 +61,7 @@
 44. Step 4: Save daily snapshot to database (ticket_history + daily_summary)
 45. Step 5: Extract category breakdown + save full report (all categories except Router Pickup)
 46. Step 6: Fetch master sheet - compare - save snapshot - cache new tickets CSV
-47. Step 7: Cleanup old data (45-day ticket purge + expired cache removal)
+47. Step 7: Cleanup old data (7-day ticket purge + expired cache removal)
 
 ## Gmail Configuration
 48. **Gmail account**: avakash.gupta@wiom.in
