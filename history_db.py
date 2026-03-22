@@ -422,8 +422,9 @@ def get_category_breakdown(report_date_str):
 
 def save_full_report(full_xlsx_path, report_date_str, report_time_ist):
     """
-    Save ALL tickets from the full pending report (all categories) into the database.
-    This enables category × aging bucket pivot tables with downloadable raw data.
+    Save all tickets from the full pending report EXCEPT Router Pickup.
+    Router Pickup daily totals are kept in category_breakdown JSON.
+    This keeps the DB small while preserving detailed data for all other categories.
     """
     init_db()
     conn = get_connection()
@@ -438,7 +439,16 @@ def save_full_report(full_xlsx_path, report_date_str, report_time_ist):
     col = {h: i for i, h in enumerate(headers) if h}
 
     tickets = []
+    total_count = 0
+    skipped_router = 0
     for row in ws.iter_rows(min_row=2, values_only=True):
+        total_count += 1
+        # Skip Router Pickup — only keep daily count in category_breakdown
+        l3_val = str(row[col.get("Disposition Folder Level 3", 41)] or "").strip()
+        if l3_val == "Router Pickup":
+            skipped_router += 1
+            continue
+
         created_date = row[col.get("Created Date", 1)]
         created_time = row[col.get("Created Time", 2)]
         created_dt = parse_datetime_ist(
@@ -471,7 +481,7 @@ def save_full_report(full_xlsx_path, report_date_str, report_time_ist):
             str(row[col.get("Channel Partner", 67)] or "").strip(),
             str(row[col.get("Disposition Folder Level 1", 39)] or "").strip(),
             str(row[col.get("Disposition Folder Level 2", 40)] or "").strip(),
-            str(row[col.get("Disposition Folder Level 3", 41)] or "").strip(),
+            l3_val,
             str(row[col.get("Disposition Folder Level 4", 42)] or "").strip(),
         )
         tickets.append(ticket)
@@ -489,8 +499,35 @@ def save_full_report(full_xlsx_path, report_date_str, report_time_ist):
 
     conn.commit()
     conn.close()
-    print(f"[FullReport] Saved {len(tickets)} tickets from full report for {report_date_str}")
-    return len(tickets)
+    print(f"[FullReport] Saved {len(tickets)} tickets (skipped {skipped_router} Router Pickup, {total_count} total) for {report_date_str}")
+    return total_count
+
+
+def cleanup_old_data(retention_days=90):
+    """
+    Remove data older than retention_days to keep the database small.
+    Runs automatically after each daily save.
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    cutoff = (datetime.now(IST) - timedelta(days=retention_days)).strftime("%Y-%m-%d")
+
+    c.execute("DELETE FROM full_report_history WHERE report_date < ?", (cutoff,))
+    del_full = c.rowcount
+    c.execute("DELETE FROM ticket_history WHERE report_date < ?", (cutoff,))
+    del_tickets = c.rowcount
+    c.execute("DELETE FROM daily_summary WHERE report_date < ?", (cutoff,))
+    del_summary = c.rowcount
+
+    total_deleted = del_full + del_tickets + del_summary
+    if total_deleted > 0:
+        conn.commit()
+        conn.execute("VACUUM")
+        print(f"[Cleanup] Removed {total_deleted} rows older than {cutoff} ({retention_days} days)")
+    else:
+        conn.commit()
+        print(f"[Cleanup] No old data to remove (cutoff: {cutoff})")
+    conn.close()
 
 
 # Pivot bucket mapping: combine < 4h and 4h-12h into 0-12h for the pivot display
