@@ -943,7 +943,13 @@ async function init() {{
   addFilterRow(); // Start with one filter row
 }}
 
+function highlightBtn(el) {{
+  document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
+  if (el) el.classList.add('active');
+}}
 function navigateDate(offset) {{
+  // Highlight clicked button
+  highlightBtn(event && event.target);
   if (offset === 'latest') {{ loadDate(availableDates[0]); return; }}
   // For D-N buttons: calculate the target date as N calendar days ago, then find closest available
   const today = new Date();
@@ -957,6 +963,8 @@ function navigateDate(offset) {{
 }}
 
 function navigatePeriod(type, n) {{
+  // Highlight clicked button
+  highlightBtn(event && event.target);
   // type='wk' or 'm', n=0 is current, n=1 is previous, etc.
   const today = new Date();
   let startStr, endStr, periodLabel;
@@ -1011,6 +1019,7 @@ function navigatePeriod(type, n) {{
 }}
 
 function applyDateRange() {{
+  highlightBtn(null); // clear all highlights for custom range
   const from = document.getElementById('dateFrom').value;
   const to = document.getElementById('dateTo').value;
   if (!from || !to) {{
@@ -1042,7 +1051,6 @@ async function loadDateRange(fromDate, toDate, periodLabel) {{
   currentRangeMode = true;
   currentRangeFrom = fromDate;
   currentRangeTo = toDate;
-  document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
 
   // Count how many data days are in the range
   const datesInRange = availableDates.filter(d => d >= fromDate && d <= toDate);
@@ -1083,7 +1091,7 @@ async function loadDateRange(fromDate, toDate, periodLabel) {{
   // Build the year from the toDate for display
   const toYear = new Date(toDate + 'T00:00:00').getFullYear();
   document.getElementById('dateInfo').textContent =
-    `${{label}} | ${{shortDate(fromDate)}} - ${{shortDate(toDate)}} ${{toYear}} | ${{numDays}} day(s) data | Aggregated`;
+    `${{label}} | ${{shortDate(fromDate)}} - ${{shortDate(toDate)}} ${{toYear}} | ${{numDays}} day(s) data | Per Day Avg`;
 
   // Add report_time field for renderSummary compatibility
   summary.report_time = `${{fromDate}} to ${{toDate}}`;
@@ -1109,7 +1117,6 @@ async function loadDate(date) {{
   currentRangeFrom = null;
   currentRangeTo = null;
   currentPeriodType = null;
-  document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
 
   const idx = availableDates.indexOf(date);
   prevSummary = null;
@@ -1827,56 +1834,73 @@ async function refreshLiveStatus() {{
 // ========== DELTA ==========
 function delta(curr, prev, key, invert=false) {{
   if (!prev || prev[key] == null || curr[key] == null) return '';
-  const diff = curr[key] - prev[key];
+  // For multi-day views, compare per-day averages
+  const currDays = curr.num_days || 1;
+  const prevDays = prev.num_days || 1;
+  const currAvg = curr[key] / currDays;
+  const prevAvg = prev[key] / prevDays;
+  const diff = Math.round(currAvg - prevAvg);
   let vsLabel = 'vs prev day';
-  if (currentPeriodType === 'week') vsLabel = 'vs prev week';
-  else if (currentPeriodType === 'month') vsLabel = 'vs prev month';
-  else if (currentPeriodType === 'period' || currentRangeMode) vsLabel = 'vs same prev days';
+  if (currentPeriodType === 'week') vsLabel = 'vs prev wk avg/day';
+  else if (currentPeriodType === 'month') vsLabel = 'vs prev month avg/day';
+  else if (currentPeriodType === 'period' || currentRangeMode) vsLabel = 'vs prev period avg/day';
+  // For single day, simplify label
+  if (currDays === 1 && prevDays === 1) {{
+    vsLabel = 'vs prev day';
+  }}
   if (diff === 0) return `<div class="card-delta neutral">&mdash; No change ${{vsLabel}}</div>`;
   const arrow = diff > 0 ? '&#9650;' : '&#9660;';
   const cls = invert ? (diff > 0 ? 'down' : 'up') : (diff > 0 ? 'up' : 'down');
-  return `<div class="card-delta ${{cls}}">${{arrow}} ${{Math.abs(diff)}} ${{vsLabel}}</div>`;
+  const pctChange = prevAvg > 0 ? Math.abs(Math.round((currAvg - prevAvg) / prevAvg * 100)) : 0;
+  const pctStr = prevAvg > 0 ? ` (${{pctChange}}%)` : '';
+  return `<div class="card-delta ${{cls}}">${{arrow}} ${{Math.abs(diff).toLocaleString()}}${{pctStr}} ${{vsLabel}}</div>`;
 }}
 
 // ========== SUMMARY CARDS ==========
 function renderSummary(s) {{
-  const pct48 = s.total_internet ? Math.round(s.critical_gt48h/s.total_internet*100) : 0;
-  const pctInternet = s.total_pending ? (s.total_internet/s.total_pending*100).toFixed(1) : 0;
+  const days = s.num_days || 1;
+  const isMulti = days > 1;
+  // For multi-day: show per-day average; for single day: show actual
+  const v = (val) => isMulti ? Math.round((val || 0) / days) : (val || 0);
+  const pct48 = v(s.total_internet) ? Math.round(v(s.critical_gt48h)/v(s.total_internet)*100) : 0;
+  const pctInternet = v(s.total_pending) ? (v(s.total_internet)/v(s.total_pending)*100).toFixed(1) : 0;
+  const avgLabel = isMulti ? `<span style="font-size:9px;color:#888;font-weight:400"> avg/day</span>` : '';
+  const subNote = isMulti ? `Avg per day (${{days}} days)` : '';
   document.getElementById('summaryCards').innerHTML = `
     <div class="card" style="border-left:3px solid var(--text2)">
       <div class="card-label">Total Pending Tickets</div>
-      <div class="card-value" style="color:#1a1a2e">${{s.total_pending?.toLocaleString() || 0}}</div>
-      <div class="card-sub">All pending tickets received</div>
+      <div class="card-value" style="color:#1a1a2e">${{v(s.total_pending).toLocaleString()}}${{avgLabel}}</div>
+      <div class="card-sub">${{isMulti ? subNote : 'All pending tickets received'}}</div>
       ${{delta(s, prevSummary, 'total_pending')}}</div>
     <div class="card" style="border-left:3px solid var(--accent)">
       <div class="card-label">Internet Issue Tickets</div>
-      <div class="card-value blue">${{s.total_internet?.toLocaleString() || 0}}</div>
+      <div class="card-value blue">${{v(s.total_internet).toLocaleString()}}${{avgLabel}}</div>
       <div class="card-sub">${{pctInternet}}% of total pending</div>
       ${{delta(s, prevSummary, 'total_internet')}}</div>
     <div class="card" style="border-left:3px solid var(--green)">
       <div class="card-label">Created on Report Day</div>
-      <div class="card-value green">${{s.created_today?.toLocaleString() || 0}}</div>
-      <div class="card-sub">New tickets that day</div>
+      <div class="card-value green">${{v(s.created_today).toLocaleString()}}${{avgLabel}}</div>
+      <div class="card-sub">${{isMulti ? subNote : 'New tickets that day'}}</div>
       ${{delta(s, prevSummary, 'created_today')}}</div>
     <div class="card" style="border-left:3px solid var(--red)">
       <div class="card-label">Critical (&gt; 48h)</div>
-      <div class="card-value red">${{s.critical_gt48h?.toLocaleString() || 0}}</div>
+      <div class="card-value red">${{v(s.critical_gt48h).toLocaleString()}}${{avgLabel}}</div>
       <div class="card-sub">${{pct48}}% of internet tickets</div>
       ${{delta(s, prevSummary, 'critical_gt48h')}}</div>
     <div class="card" style="border-left:3px solid var(--orange)">
       <div class="card-label">Partner Queue</div>
-      <div class="card-value orange">${{s.queue_partner?.toLocaleString() || 0}}</div>
-      <div class="card-sub">Waiting on partner</div>
+      <div class="card-value orange">${{v(s.queue_partner).toLocaleString()}}${{avgLabel}}</div>
+      <div class="card-sub">${{isMulti ? subNote : 'Waiting on partner'}}</div>
       ${{delta(s, prevSummary, 'queue_partner')}}</div>
     <div class="card" style="border-left:3px solid #a855f7">
       <div class="card-label">CX High Pain</div>
-      <div class="card-value" style="color:#a855f7">${{s.queue_cx_high_pain?.toLocaleString() || 0}}</div>
-      <div class="card-sub">Escalated</div>
+      <div class="card-value" style="color:#a855f7">${{v(s.queue_cx_high_pain).toLocaleString()}}${{avgLabel}}</div>
+      <div class="card-sub">${{isMulti ? subNote : 'Escalated'}}</div>
       ${{delta(s, prevSummary, 'queue_cx_high_pain')}}</div>
     <div class="card" style="border-left:3px solid #06b6d4">
       <div class="card-label">PX-Send to Wiom</div>
-      <div class="card-value" style="color:#06b6d4">${{s.queue_px_send_wiom?.toLocaleString() || 0}}</div>
-      <div class="card-sub">Wiom queue</div>
+      <div class="card-value" style="color:#06b6d4">${{v(s.queue_px_send_wiom).toLocaleString()}}${{avgLabel}}</div>
+      <div class="card-sub">${{isMulti ? subNote : 'Wiom queue'}}</div>
       ${{delta(s, prevSummary, 'queue_px_send_wiom')}}</div>
   `;
 }}
