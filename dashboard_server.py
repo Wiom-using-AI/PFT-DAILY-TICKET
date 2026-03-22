@@ -970,10 +970,11 @@ function applyDateRange() {{
   }}
 
   // If it's a single date, load normally; otherwise aggregate
-  currentPeriodType = null;
   if (from === to) {{
+    currentPeriodType = null;
     loadDate(from);
   }} else {{
+    currentPeriodType = 'period';
     loadDateRange(from, to, 'Custom Range');
   }}
 }}
@@ -1666,7 +1667,7 @@ function delta(curr, prev, key, invert=false) {{
   let vsLabel = 'vs prev day';
   if (currentPeriodType === 'week') vsLabel = 'vs prev week';
   else if (currentPeriodType === 'month') vsLabel = 'vs prev month';
-  else if (currentRangeMode) vsLabel = 'vs prev period';
+  else if (currentPeriodType === 'period' || currentRangeMode) vsLabel = 'vs same prev days';
   if (diff === 0) return `<div class="card-delta neutral">&mdash; No change ${{vsLabel}}</div>`;
   const arrow = diff > 0 ? '&#9650;' : '&#9660;';
   const cls = invert ? (diff > 0 ? 'down' : 'up') : (diff > 0 ? 'up' : 'down');
