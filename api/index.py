@@ -381,7 +381,7 @@ def api_aging_daily_trend():
     l3 = request.args.get("l3")
     l4 = request.args.get("l4")
     if date_from and date_to:
-        return jsonify(get_aging_daily_trend(date_from, date_to, l3, l4))
+        return jsonify(get_aging_daily_trend(date_from, date_to, l3_list=l3, l4_list=l4))
     return jsonify({"error": "from and to required"}), 400
 
 

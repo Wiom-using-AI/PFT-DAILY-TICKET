@@ -374,7 +374,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             l3 = params.get("l3", [None])[0]
             l4 = params.get("l4", [None])[0]
             if date_from and date_to:
-                self.send_json(get_aging_daily_trend(date_from, date_to, l3, l4))
+                self.send_json(get_aging_daily_trend(date_from, date_to, l3_list=l3, l4_list=l4))
             else:
                 self.send_json({"error": "from and to required"}, 400)
         elif path == "/api/category-l4-trend":
@@ -1917,14 +1917,13 @@ function renderAging(s) {{
 }}
 
 // ========== AGING DAILY TREND ==========
+window._agingSelectedL3 = [];
+window._agingSelectedL4 = [];
+
 async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
   const container = document.getElementById('agingTrendContent');
-
-  // Read L3/L4 values BEFORE clearing the container (selects live inside it)
-  const l3Select = document.getElementById('agingL3Filter');
-  const l4Select = document.getElementById('agingL4Filter');
-  const l3Val = l3Select ? l3Select.value : '';
-  const l4Val = l4Select ? l4Select.value : '';
+  const l3Vals = window._agingSelectedL3;
+  const l4Vals = window._agingSelectedL4;
 
   container.innerHTML = '<div class="loading">Loading aging trend...</div>';
 
@@ -1935,192 +1934,176 @@ async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
       toDate = overrideTo;
     }} else {{
       const refDate = currentDate || (availableDates.length > 0 ? availableDates[0] : null);
-      if (!refDate) {{
-        container.innerHTML = '<div class="loading">No dates available</div>';
-        return;
-      }}
+      if (!refDate) {{ container.innerHTML = '<div class="loading">No dates available</div>'; return; }}
       toDate = refDate;
       const to = new Date(refDate + 'T00:00:00');
       to.setDate(to.getDate() - 6);
       fromDate = localDateStr(to);
     }}
-
     document.getElementById('agingTrendFrom').value = fromDate;
     document.getElementById('agingTrendTo').value = toDate;
 
     let url = `/api/aging-daily-trend?from=${{fromDate}}&to=${{toDate}}`;
-    if (l3Val) url += `&l3=${{encodeURIComponent(l3Val)}}`;
-    if (l4Val) url += `&l4=${{encodeURIComponent(l4Val)}}`;
+    if (l3Vals.length) url += `&l3=${{encodeURIComponent(l3Vals.join(','))}}`;
+    if (l4Vals.length) url += `&l4=${{encodeURIComponent(l4Vals.join(','))}}`;
 
     const data = await api(url);
-    if (!data || data.error || !data.dates || data.dates.length === 0) {{
-      container.innerHTML = '<div class="loading">No aging trend data available for this range</div>';
+    if (!data || data.error || !data.dates || !data.dates.length) {{
+      container.innerHTML = '<div class="loading">No aging trend data for this range</div>';
       return;
     }}
-
-    const dates = data.dates;
-    const buckets = data.buckets;
-
+    const dates = data.dates, buckets = data.buckets;
     window._agingTrendDates = dates;
     window._agingTrendBuckets = buckets;
+    const l3Options = data.available_l3 || [], l4Options = data.available_l4 || [];
 
-    // Build L3 dropdown (preserve selection)
-    const l3Options = (data.available_l3 || []);
-    let l3Html = `<select id="agingL3Filter" onchange="onAgingL3Change()" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:inherit;max-width:180px">
-      <option value="">All Categories (L3)</option>`;
-    l3Options.forEach(l3 => {{
-      l3Html += `<option value="${{l3}}" ${{l3 === l3Val ? 'selected' : ''}}>${{l3}}</option>`;
+    // --- Multi-select L3 dropdown ---
+    let l3Items = '';
+    l3Options.forEach(v => {{
+      l3Items += `<label style="display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer;font-size:11px;white-space:nowrap">
+        <input type="checkbox" ${{l3Vals.includes(v)?'checked':''}} data-aging-l3="${{v}}" style="cursor:pointer"> ${{v}}</label>`;
     }});
-    l3Html += `</select>`;
+    const l3Cnt = l3Vals.length;
+    const l3Html = `<div style="position:relative;display:inline-block" id="agingL3Container">
+      <button onclick="document.getElementById('agingL3Dropdown').classList.toggle('show')"
+        style="padding:4px 10px;border:1px solid ${{l3Cnt?'#6366f1':'var(--border)'}};border-radius:6px;background:${{l3Cnt?'#eef2ff':'#fff'}};cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px;color:${{l3Cnt?'#4338ca':'inherit'}}">
+        ${{l3Cnt ? 'Category L3 ('+l3Cnt+')' : 'All Categories (L3)'}} &#9660;</button>
+      <div id="agingL3Dropdown" style="display:none;position:absolute;left:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:250px;max-height:300px;overflow-y:auto">
+        <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
+          <button onclick="document.querySelectorAll('#agingL3Dropdown input[data-aging-l3]').forEach(c=>c.checked=true);agingApplyL3()"
+            style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">All</button>
+          <button onclick="document.querySelectorAll('#agingL3Dropdown input[data-aging-l3]').forEach(c=>c.checked=false);agingApplyL3()"
+            style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">None</button>
+          <button onclick="agingApplyL3();document.getElementById('agingL3Dropdown').classList.remove('show')"
+            style="flex:1;padding:3px;border:1px solid #6366f1;border-radius:4px;background:#eef2ff;cursor:pointer;font-size:10px;color:#4338ca;font-weight:600">Apply</button>
+        </div>
+        ${{l3Items}}
+      </div></div>`;
 
-    // Build L4 dropdown (preserve selection)
-    const l4Options = (data.available_l4 || []);
-    let l4Html = `<select id="agingL4Filter" onchange="onAgingL4Change()" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:inherit;max-width:200px" ${{!l3Val ? 'disabled' : ''}}>
-      <option value="">All Sub-categories (L4)</option>`;
-    l4Options.forEach(l4 => {{
-      l4Html += `<option value="${{l4}}" ${{l4 === l4Val ? 'selected' : ''}}>${{l4}}</option>`;
+    // --- Multi-select L4 dropdown ---
+    let l4Items = '';
+    l4Options.forEach(v => {{
+      l4Items += `<label style="display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer;font-size:11px;white-space:nowrap">
+        <input type="checkbox" ${{l4Vals.includes(v)?'checked':''}} data-aging-l4="${{v}}" style="cursor:pointer"> ${{v}}</label>`;
     }});
-    l4Html += `</select>`;
+    const l4Cnt = l4Vals.length;
+    const l4Disabled = l3Cnt === 0;
+    const l4Html = l4Disabled
+      ? `<button disabled style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:#f5f5f5;font-size:11px;color:#aaa;cursor:not-allowed">All Sub-categories (L4) &#9660;</button>`
+      : `<div style="position:relative;display:inline-block" id="agingL4Container">
+      <button onclick="document.getElementById('agingL4Dropdown').classList.toggle('show')"
+        style="padding:4px 10px;border:1px solid ${{l4Cnt?'#d97706':'var(--border)'}};border-radius:6px;background:${{l4Cnt?'#fffbeb':'#fff'}};cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px;color:${{l4Cnt?'#92400e':'inherit'}}">
+        ${{l4Cnt ? 'Sub-cat L4 ('+l4Cnt+')' : 'All Sub-categories (L4)'}} &#9660;</button>
+      <div id="agingL4Dropdown" style="display:none;position:absolute;left:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:280px;max-height:300px;overflow-y:auto">
+        <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
+          <button onclick="document.querySelectorAll('#agingL4Dropdown input[data-aging-l4]').forEach(c=>c.checked=true);agingApplyL4()"
+            style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">All</button>
+          <button onclick="document.querySelectorAll('#agingL4Dropdown input[data-aging-l4]').forEach(c=>c.checked=false);agingApplyL4()"
+            style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">None</button>
+          <button onclick="agingApplyL4();document.getElementById('agingL4Dropdown').classList.remove('show')"
+            style="flex:1;padding:3px;border:1px solid #d97706;border-radius:4px;background:#fffbeb;cursor:pointer;font-size:10px;color:#92400e;font-weight:600">Apply</button>
+        </div>
+        ${{l4Items}}
+      </div></div>`;
+
+    // Filter badges
+    let badges = '';
+    l3Vals.forEach(v => {{ badges += `<span style="background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">${{v}}</span> `; }});
+    l4Vals.forEach(v => {{ badges += `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">${{v}}</span> `; }});
+    if (l3Vals.length || l4Vals.length) badges += `<button onclick="clearAgingCatFilters()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:11px;font-weight:600">&#10005; Clear</button>`;
 
     const bucketNames = BUCKET_LABELS;
-
-    // Compute daily totals
     const dailyTotals = {{}};
-    dates.forEach(d => {{
-      dailyTotals[d] = bucketNames.reduce((s, b) => s + ((buckets[b] && buckets[b][d]) || 0), 0);
-    }});
+    dates.forEach(d => {{ dailyTotals[d] = bucketNames.reduce((s,b) => s + ((buckets[b]&&buckets[b][d])||0), 0); }});
 
-    function shortCol(dateStr) {{
-      const dt = new Date(dateStr + 'T00:00:00');
-      return dt.toLocaleDateString('en-IN', {{ day: 'numeric', month: 'short' }});
-    }}
+    function shortCol(ds) {{ const dt = new Date(ds+'T00:00:00'); return dt.toLocaleDateString('en-IN',{{day:'numeric',month:'short'}}); }}
 
-    // Active filter label
-    let filterLabel = '';
-    if (l3Val) filterLabel += `<span style="background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">L3: ${{l3Val}}</span> `;
-    if (l4Val) filterLabel += `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">L4: ${{l4Val}}</span> `;
-    if (l3Val || l4Val) filterLabel += `<button onclick="clearAgingCatFilters()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:11px;font-weight:600" title="Clear filters">&#10005; Clear</button>`;
-
-    // Build header
     let headerCells = `<th style="text-align:left;min-width:160px;position:sticky;left:0;background:#f8fafc;z-index:2">Aging Bucket</th>`;
-    dates.forEach(d => {{
-      headerCells += `<th style="text-align:center;min-width:75px;white-space:nowrap;font-size:11px">${{shortCol(d)}}</th>`;
-    }});
+    dates.forEach(d => {{ headerCells += `<th style="text-align:center;min-width:75px;white-space:nowrap;font-size:11px">${{shortCol(d)}}</th>`; }});
 
-    // Build body rows
     let bodyRows = '';
     bucketNames.forEach((label, i) => {{
       const color = BUCKET_COLORS[i];
-      let cells = `<td style="position:sticky;left:0;background:#fff;z-index:1;white-space:nowrap">
-        <span class="dot" style="background:${{color}}"></span>${{label}}
-      </td>`;
-
+      let cells = `<td style="position:sticky;left:0;background:#fff;z-index:1;white-space:nowrap"><span class="dot" style="background:${{color}}"></span>${{label}}</td>`;
       dates.forEach(d => {{
-        const count = (buckets[label] && buckets[label][d]) || 0;
-        const total = dailyTotals[d] || 1;
-        const pct = (count / total * 100).toFixed(1);
+        const count = (buckets[label]&&buckets[label][d])||0;
+        const total = dailyTotals[d]||1;
+        const pct = (count/total*100).toFixed(1);
         const dlUrl = `/api/download-filtered?date=${{d}}&bucket=${{encodeURIComponent(label)}}`;
-        cells += `<td class="num" style="font-size:11px;cursor:pointer" title="${{count.toLocaleString()}} tickets — click to download" onclick="window.location.href='${{dlUrl}}'">
+        cells += `<td class="num" style="font-size:11px;cursor:pointer" title="${{count.toLocaleString()}} tickets" onclick="window.location.href='${{dlUrl}}'">
           ${{count > 0 ? count.toLocaleString() : '—'}}
-          ${{count > 0 ? '<div style=\\"font-size:9px;color:#94a3b8;font-weight:400\\">' + pct + '%</div>' : ''}}
-        </td>`;
+          ${{count > 0 ? '<div style=\\"font-size:9px;color:#94a3b8;font-weight:400\\">' + pct + '%</div>' : ''}}</td>`;
       }});
-
       bodyRows += `<tr data-agingrow="${{label}}">${{cells}}</tr>`;
     }});
 
-    // TOTAL row
     let totalCells = `<td style="position:sticky;left:0;background:#f1f5f9;z-index:1;font-weight:700">TOTAL</td>`;
-    dates.forEach(d => {{
-      totalCells += `<td class="num" style="font-weight:700;font-size:11px">${{(dailyTotals[d] || 0).toLocaleString()}}</td>`;
-    }});
+    dates.forEach(d => {{ totalCells += `<td class="num" style="font-weight:700;font-size:11px">${{(dailyTotals[d]||0).toLocaleString()}}</td>`; }});
 
-    const tableHtml = `
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-        ${{l3Html}} ${{l4Html}} ${{filterLabel}}
-      </div>
+    container.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">${{l3Html}} ${{l4Html}}</div>
+      ${{badges ? '<div style="margin-bottom:8px;display:flex;align-items:center;gap:4px;flex-wrap:wrap">'+badges+'</div>' : ''}}
       <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
         <table style="min-width:100%;border-collapse:collapse">
           <thead><tr style="background:#f8fafc;border-bottom:2px solid var(--border)">${{headerCells}}</tr></thead>
-          <tbody>
-            ${{bodyRows}}
-            <tr style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr>
-          </tbody>
+          <tbody>${{bodyRows}}<tr style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr></tbody>
         </table>
       </div>
       <div style="font-size:11px;color:var(--text2);margin-top:6px">
-        Showing ${{dates.length}} day(s) from ${{shortCol(dates[0])}} to ${{shortCol(dates[dates.length - 1])}} &mdash; each cell shows count + % of daily total
+        Showing ${{dates.length}} day(s) from ${{shortCol(dates[0])}} to ${{shortCol(dates[dates.length-1])}} &mdash; each cell shows count + % of daily total
       </div>`;
-
-    container.innerHTML = tableHtml;
 
     // Build bucket filter dropdown
-    const checkedCount = bucketNames.length;
-    const totalCount = bucketNames.length;
     let filterItems = '';
     bucketNames.forEach((label, i) => {{
-      const color = BUCKET_COLORS[i];
       filterItems += `<label style="display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer;font-size:12px;white-space:nowrap">
-        <input type="checkbox" checked data-agingtrend="${{label}}" onchange="filterAgingTrend()"
-               style="accent-color:${{color}};cursor:pointer"> ${{label}}
-      </label>`;
+        <input type="checkbox" checked data-agingtrend="${{label}}" onchange="filterAgingTrend()" style="accent-color:${{BUCKET_COLORS[i]}};cursor:pointer"> ${{label}}</label>`;
     }});
-
-    const filterHtml = `
-      <div style="position:relative;display:inline-block">
-        <button onclick="document.getElementById('agingTrendDropdown').classList.toggle('show')"
-                style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px">
-          &#9776; Filter Buckets <span id="agingTrendFilterCount">(${{checkedCount}}/${{totalCount}})</span> &#9660;
-        </button>
-        <div id="agingTrendDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:200px;max-height:300px;overflow-y:auto">
-          <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
-            <button onclick="document.querySelectorAll('#agingTrendDropdown input[data-agingtrend]').forEach(c=>c.checked=true);filterAgingTrend()"
-                    style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">Select All</button>
-            <button onclick="document.querySelectorAll('#agingTrendDropdown input[data-agingtrend]').forEach(c=>c.checked=false);filterAgingTrend()"
-                    style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">Deselect All</button>
-          </div>
-          ${{filterItems}}
-        </div>
-      </div>`;
-
     const fc = document.getElementById('agingTrendFilterContainer');
-    if (fc) fc.innerHTML = filterHtml;
+    if (fc) fc.innerHTML = `<div style="position:relative;display:inline-block">
+      <button onclick="document.getElementById('agingTrendDropdown').classList.toggle('show')"
+        style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px">
+        &#9776; Filter Buckets <span id="agingTrendFilterCount">(${{bucketNames.length}}/${{bucketNames.length}})</span> &#9660;</button>
+      <div id="agingTrendDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:200px;max-height:300px;overflow-y:auto">
+        <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
+          <button onclick="document.querySelectorAll('#agingTrendDropdown input[data-agingtrend]').forEach(c=>c.checked=true);filterAgingTrend()"
+            style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">All</button>
+          <button onclick="document.querySelectorAll('#agingTrendDropdown input[data-agingtrend]').forEach(c=>c.checked=false);filterAgingTrend()"
+            style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">None</button>
+        </div>${{filterItems}}</div></div>`;
 
-    // Close dropdown when clicking outside
+    // Close dropdowns on outside click
     document.addEventListener('click', function(e) {{
-      const dd = document.getElementById('agingTrendDropdown');
-      const container = document.getElementById('agingTrendFilterContainer');
-      if (dd && container && !container.contains(e.target)) dd.classList.remove('show');
+      ['agingTrendDropdown','agingL3Dropdown','agingL4Dropdown'].forEach(id => {{
+        const dd = document.getElementById(id);
+        if (!dd) return;
+        const inside = ['agingTrendFilterContainer','agingL3Container','agingL4Container'].some(cid => {{
+          const c = document.getElementById(cid); return c && c.contains(e.target);
+        }});
+        if (!inside) dd.classList.remove('show');
+      }});
     }});
-
   }} catch(e) {{
     container.innerHTML = '<div class="loading">Could not load aging trend</div>';
   }}
 }}
 
-// L3/L4 filter handlers for aging trend
-window.onAgingL3Change = function() {{
-  // Reset L4 when L3 changes, then reload
-  const l4 = document.getElementById('agingL4Filter');
-  if (l4) l4.value = '';
-  const from = document.getElementById('agingTrendFrom').value;
-  const to = document.getElementById('agingTrendTo').value;
+// L3/L4 multi-select handlers
+window.agingApplyL3 = function() {{
+  window._agingSelectedL3 = Array.from(document.querySelectorAll('#agingL3Dropdown input[data-aging-l3]:checked')).map(c => c.getAttribute('data-aging-l3'));
+  window._agingSelectedL4 = []; // reset L4
+  const from = document.getElementById('agingTrendFrom').value, to = document.getElementById('agingTrendTo').value;
   if (from && to) loadAgingDailyTrend(from, to);
 }}
-
-window.onAgingL4Change = function() {{
-  const from = document.getElementById('agingTrendFrom').value;
-  const to = document.getElementById('agingTrendTo').value;
+window.agingApplyL4 = function() {{
+  window._agingSelectedL4 = Array.from(document.querySelectorAll('#agingL4Dropdown input[data-aging-l4]:checked')).map(c => c.getAttribute('data-aging-l4'));
+  const from = document.getElementById('agingTrendFrom').value, to = document.getElementById('agingTrendTo').value;
   if (from && to) loadAgingDailyTrend(from, to);
 }}
-
 window.clearAgingCatFilters = function() {{
-  const l3 = document.getElementById('agingL3Filter');
-  const l4 = document.getElementById('agingL4Filter');
-  if (l3) l3.value = '';
-  if (l4) l4.value = '';
-  const from = document.getElementById('agingTrendFrom').value;
-  const to = document.getElementById('agingTrendTo').value;
+  window._agingSelectedL3 = [];
+  window._agingSelectedL4 = [];
+  const from = document.getElementById('agingTrendFrom').value, to = document.getElementById('agingTrendTo').value;
   if (from && to) loadAgingDailyTrend(from, to);
 }}
 

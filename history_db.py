@@ -768,19 +768,10 @@ def get_category_daily_trend(date_from, date_to):
     }
 
 
-def get_aging_daily_trend(date_from, date_to, l3=None, l4=None):
+def get_aging_daily_trend(date_from, date_to, l3_list=None, l4_list=None):
     """Return aging bucket counts for each date in the range.
-    If l3/l4 filters are provided, queries full_report_history instead of daily_summary.
-    Returns: {
-        'dates': ['2026-03-18', '2026-03-19', ...],
-        'buckets': {
-            '< 4h': {'2026-03-18': 307, ...},
-            '4h - 12h': {'2026-03-18': 40, ...},
-            ...
-        },
-        'available_l3': [...],
-        'available_l4': [...]
-    }
+    l3_list/l4_list can be comma-separated strings or lists.
+    If filters are provided, queries full_report_history.
     """
     conn = get_connection()
     c = conn.cursor()
@@ -788,7 +779,15 @@ def get_aging_daily_trend(date_from, date_to, l3=None, l4=None):
     bucket_labels = ['< 4h', '4h - 12h', '12h - 24h', '24h - 36h',
                      '36h - 48h', '48h - 72h', '72h - 120h', '> 120h']
 
-    # Get available L3 and L4 values for the filter dropdowns
+    # Parse comma-separated filter values
+    l3_vals = []
+    l4_vals = []
+    if l3_list:
+        l3_vals = [x.strip() for x in l3_list.split(",") if x.strip()]
+    if l4_list:
+        l4_vals = [x.strip() for x in l4_list.split(",") if x.strip()]
+
+    # Get available L3 values
     c.execute("""
         SELECT DISTINCT disposition_l3 FROM full_report_history
         WHERE report_date >= ? AND report_date <= ? AND disposition_l3 != ''
@@ -796,19 +795,21 @@ def get_aging_daily_trend(date_from, date_to, l3=None, l4=None):
     """, (date_from, date_to))
     available_l3 = [r["disposition_l3"] for r in c.fetchall()]
 
+    # Get available L4 values (filtered by selected L3s if any)
     l4_query = """
         SELECT DISTINCT disposition_l4 FROM full_report_history
         WHERE report_date >= ? AND report_date <= ? AND disposition_l4 IS NOT NULL AND disposition_l4 != ''
     """
     l4_params = [date_from, date_to]
-    if l3:
-        l4_query += " AND disposition_l3 = ?"
-        l4_params.append(l3)
+    if l3_vals:
+        placeholders = ",".join("?" * len(l3_vals))
+        l4_query += f" AND disposition_l3 IN ({placeholders})"
+        l4_params.extend(l3_vals)
     l4_query += " ORDER BY disposition_l4"
     c.execute(l4_query, l4_params)
     available_l4 = [r["disposition_l4"] for r in c.fetchall()]
 
-    if l3 or l4:
+    if l3_vals or l4_vals:
         # Query from full_report_history with filters
         query = """
             SELECT report_date, aging_bucket, COUNT(*) as cnt
@@ -816,12 +817,14 @@ def get_aging_daily_trend(date_from, date_to, l3=None, l4=None):
             WHERE report_date >= ? AND report_date <= ?
         """
         params = [date_from, date_to]
-        if l3:
-            query += " AND disposition_l3 = ?"
-            params.append(l3)
-        if l4:
-            query += " AND disposition_l4 = ?"
-            params.append(l4)
+        if l3_vals:
+            placeholders = ",".join("?" * len(l3_vals))
+            query += f" AND disposition_l3 IN ({placeholders})"
+            params.extend(l3_vals)
+        if l4_vals:
+            placeholders = ",".join("?" * len(l4_vals))
+            query += f" AND disposition_l4 IN ({placeholders})"
+            params.extend(l4_vals)
         query += " GROUP BY report_date, aging_bucket ORDER BY report_date ASC"
         c.execute(query, params)
         raw = c.fetchall()
@@ -840,7 +843,7 @@ def get_aging_daily_trend(date_from, date_to, l3=None, l4=None):
             if ab in buckets:
                 buckets[ab][r["report_date"]] = r["cnt"]
     else:
-        # Use pre-aggregated daily_summary (faster)
+        # Use pre-aggregated daily_summary (Internet Issues only)
         bucket_keys = [
             ('bucket_lt4h', '< 4h'),
             ('bucket_4_12h', '4h - 12h'),
