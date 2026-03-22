@@ -1,16 +1,15 @@
 name: Daily PFT Ticket Update
 
-# Runs at 10:30 AM IST (5:00 AM UTC) - gives 15 min buffer after email arrives ~10:13 AM
-# Also runs at 11:00 AM IST (5:30 AM UTC) as backup in case first run missed
+# Starts at 10:15 AM IST, retries every 15 min until email found
 on:
   schedule:
-    - cron: '0 5 * * 1-6'    # Mon-Sat at 10:30 AM IST (primary)
-    - cron: '30 5 * * 1-6'   # Mon-Sat at 11:00 AM IST (backup)
+    - cron: '45 4 * * 1-6'   # Mon-Sat at 10:15 AM IST
   workflow_dispatch:  # Allow manual trigger from GitHub UI
 
 jobs:
   update-tickets:
     runs-on: ubuntu-latest
+    timeout-minutes: 120  # Max 2 hours
 
     steps:
       - name: Checkout repository
@@ -21,11 +20,8 @@ jobs:
       - name: Check if already updated today
         id: check
         run: |
-          # Get today's date in IST
           TODAY=$(TZ=Asia/Kolkata date +%Y-%m-%d)
           echo "today=$TODAY" >> $GITHUB_OUTPUT
-
-          # Check if database already has today's data by looking at last commit
           LAST_MSG=$(git log -1 --pretty=%s 2>/dev/null || echo "")
           if echo "$LAST_MSG" | grep -q "Auto-update: Daily ticket data $TODAY"; then
             echo "skip=true" >> $GITHUB_OUTPUT
@@ -45,26 +41,33 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         run: pip install openpyxl requests
 
-      - name: Run daily agent (with retry)
+      - name: Run daily agent (retry every 15 min until email found)
         if: steps.check.outputs.skip != 'true'
         env:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: |
-          # Try up to 3 times with 2-minute wait between retries
-          for attempt in 1 2 3; do
-            echo "Attempt $attempt of 3..."
+          MAX_ATTEMPTS=8
+          WAIT_SECONDS=900
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo ""
+            echo "=========================================="
+            echo "Attempt $attempt of $MAX_ATTEMPTS ($(TZ=Asia/Kolkata date '+%I:%M %p IST'))"
+            echo "=========================================="
             if python run_daily_agent.py; then
-              echo "Success on attempt $attempt!"
+              echo ""
+              echo "SUCCESS on attempt $attempt!"
               exit 0
             else
-              echo "Attempt $attempt failed."
-              if [ $attempt -lt 3 ]; then
-                echo "Waiting 2 minutes before retry..."
-                sleep 120
+              echo ""
+              echo "Email not found yet on attempt $attempt."
+              if [ $attempt -lt $MAX_ATTEMPTS ]; then
+                echo "Waiting 15 minutes before next try..."
+                sleep $WAIT_SECONDS
               fi
             fi
           done
-          echo "All 3 attempts failed."
+          echo ""
+          echo "FAILED: Email not found after $MAX_ATTEMPTS attempts (2 hours)."
           exit 1
 
       - name: Commit and push updated database
@@ -81,14 +84,12 @@ jobs:
           git diff --cached --quiet || git commit -m "Auto-update: Daily ticket data $TODAY"
           git push origin main
 
-      # Wait for Vercel to deploy the updated dashboard
       - name: Wait for Vercel deployment
         if: steps.check.outputs.skip != 'true'
         run: |
           echo "Waiting 90 seconds for Vercel to deploy..."
           sleep 90
 
-      # Take screenshot and post to Slack
       - name: Install Playwright
         if: steps.check.outputs.skip != 'true'
         run: |
@@ -103,7 +104,6 @@ jobs:
           SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
         run: python slack_screenshot.py
 
-      # Notify on failure via Slack bot
       - name: Notify Slack on failure
         if: failure() && steps.check.outputs.skip != 'true'
         env:
@@ -117,6 +117,6 @@ jobs:
           today = datetime.now().strftime('%Y-%m-%d')
           resp = requests.post('https://slack.com/api/chat.postMessage',
             headers={'Authorization': f'Bearer {os.environ[\"SLACK_BOT_TOKEN\"]}', 'Content-Type': 'application/json'},
-            json={'channel': os.environ['SLACK_CHANNEL'], 'text': f':x: *PFT Daily Update Failed — {today}*\nPlease run manually via Claude Code.'})
+            json={'channel': os.environ['SLACK_CHANNEL'], 'text': f':x: *PFT Daily Update Failed — {today}*\nEmail not found after 2 hours of retrying.\nPlease run manually via Claude Code.'})
           print(resp.json())
           "
