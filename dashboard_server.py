@@ -836,20 +836,9 @@ def generate_dashboard_html():
 <!-- Heatmap: Queue x Aging (hidden) -->
 <div class="section" id="heatmapSection" style="display:none"></div>
 
-<!-- Charts Row 2: Trends -->
-<div class="dashboard-section" data-section-id="trendChart" data-section-label="Daily Trend Chart" draggable="true">
-<div class="section" id="trendSection">
-  <div class="section-toolbar">
-    <button onclick="moveSectionUp(this.closest('.dashboard-section'))" title="Move up">&#11014;</button>
-    <button onclick="moveSectionDown(this.closest('.dashboard-section'))" title="Move down">&#11015;</button>
-    <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
-  </div>
-  <div class="section-header">
-    <h3>Daily Trend (All Available Dates)</h3>
-    <button class="btn btn-sm btn-download" onclick="downloadSection('trends')">&#11015; CSV</button>
-  </div>
-  <div class="chart-container" style="height:280px"><canvas id="trendChart"></canvas></div>
-</div>
+<!-- Daily Trend Chart (removed) -->
+<div class="dashboard-section" data-section-id="trendChart" data-section-label="Daily Trend Chart" draggable="true" style="display:none">
+<div class="section" id="trendSection"></div>
 </div>
 
 <!-- Charts Row 3: Zone + Partner -->
