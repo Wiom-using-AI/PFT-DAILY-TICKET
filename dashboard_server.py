@@ -1679,7 +1679,7 @@ function renderSummary(s) {{
   const pctInternet = s.total_pending ? (s.total_internet/s.total_pending*100).toFixed(1) : 0;
   document.getElementById('summaryCards').innerHTML = `
     <div class="card" style="border-left:3px solid var(--text2)">
-      <div class="card-label">Total Tickets in Email</div>
+      <div class="card-label">Total Pending Tickets</div>
       <div class="card-value" style="color:#1a1a2e">${{s.total_pending?.toLocaleString() || 0}}</div>
       <div class="card-sub">All pending tickets received</div>
       ${{delta(s, prevSummary, 'total_pending')}}</div>
