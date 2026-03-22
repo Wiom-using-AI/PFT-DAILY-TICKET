@@ -37,6 +37,7 @@ from history_db import (
     get_category_daily_trend,
     get_category_l4_daily_trend,
     get_tickets_for_download,
+    get_aging_daily_trend,
     init_db,
     AGENT_LIST,
     get_agent_dates,
@@ -365,6 +366,13 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             if date_from and date_to:
                 trend = get_category_daily_trend(date_from, date_to)
                 self.send_json(trend)
+            else:
+                self.send_json({"error": "from and to required"}, 400)
+        elif path == "/api/aging-daily-trend":
+            date_from = params.get("from", [None])[0]
+            date_to = params.get("to", [None])[0]
+            if date_from and date_to:
+                self.send_json(get_aging_daily_trend(date_from, date_to))
             else:
                 self.send_json({"error": "from and to required"}, 400)
         elif path == "/api/category-l4-trend":
@@ -792,8 +800,33 @@ def generate_dashboard_html():
   <div class="filter-results" id="filterResults"></div>
 </div>
 
-<!-- Aging Table -->
-<div class="section" id="agingSection"><div class="loading">Loading...</div></div>
+<!-- Aging Daily Trend -->
+<div class="dashboard-section" data-section-id="agingTrend" data-section-label="Aging Breakdown" draggable="true">
+<div class="section" id="agingTrendSection">
+  <div class="section-toolbar">
+    <button onclick="moveSectionUp(this.closest('.dashboard-section'))" title="Move up">&#11014;</button>
+    <button onclick="moveSectionDown(this.closest('.dashboard-section'))" title="Move down">&#11015;</button>
+    <button class="remove-btn" onclick="hideSection(this.closest('.dashboard-section'))" title="Remove section">&#10005;</button>
+  </div>
+  <div class="section-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+    <h3>&#9200; Ticket Aging &mdash; Daily Trend</h3>
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      <div id="agingTrendFilterContainer" style="margin-right:8px"></div>
+      <label style="font-size:11px;color:var(--text2);font-weight:600">FROM</label>
+      <input type="date" id="agingTrendFrom" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:inherit">
+      <label style="font-size:11px;color:var(--text2);font-weight:600">TO</label>
+      <input type="date" id="agingTrendTo" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:inherit">
+      <button class="btn btn-sm btn-primary" onclick="applyAgingTrendFilter()">Apply</button>
+    </div>
+  </div>
+  <div id="agingTrendContent">
+    <div class="loading">Loading...</div>
+  </div>
+</div>
+</div>
+
+<!-- Legacy aging section (hidden, used by drill-down) -->
+<div class="section" id="agingSection" style="display:none"></div>
 
 <!-- Charts Row 1: Aging + Queue -->
 <div class="charts" id="chartsRow1"></div>
@@ -1110,6 +1143,7 @@ async function loadDate(date) {{
   resetFilters();
   loadPivotTable(date);
   loadCategoryDailyTrend();
+  loadAgingDailyTrend();
   loadMasterComparison(date);
 }}
 
@@ -1878,6 +1912,229 @@ function renderAging(s) {{
     </div>
     <table><thead><tr><th>Aging Bucket</th><th style="text-align:right">Tickets</th>
     <th style="text-align:right">%</th><th>Distribution</th><th style="width:40px"></th></tr></thead><tbody>${{rows}}</tbody></table>`;
+}}
+
+// ========== AGING DAILY TREND ==========
+async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
+  const container = document.getElementById('agingTrendContent');
+  container.innerHTML = '<div class="loading">Loading aging trend...</div>';
+
+  try {{
+    let fromDate, toDate;
+    if (overrideFrom && overrideTo) {{
+      fromDate = overrideFrom;
+      toDate = overrideTo;
+    }} else {{
+      const refDate = currentDate || (availableDates.length > 0 ? availableDates[0] : null);
+      if (!refDate) {{
+        container.innerHTML = '<div class="loading">No dates available</div>';
+        return;
+      }}
+      toDate = refDate;
+      const to = new Date(refDate + 'T00:00:00');
+      to.setDate(to.getDate() - 6);
+      fromDate = localDateStr(to);
+    }}
+
+    document.getElementById('agingTrendFrom').value = fromDate;
+    document.getElementById('agingTrendTo').value = toDate;
+
+    const data = await api(`/api/aging-daily-trend?from=${{fromDate}}&to=${{toDate}}`);
+    if (!data || data.error || !data.dates || data.dates.length === 0) {{
+      container.innerHTML = '<div class="loading">No aging trend data available for this range</div>';
+      return;
+    }}
+
+    const dates = data.dates;
+    const buckets = data.buckets;
+
+    window._agingTrendDates = dates;
+    window._agingTrendBuckets = buckets;
+
+    const bucketNames = BUCKET_LABELS;
+
+    // Compute daily totals (sum of all buckets per date)
+    const dailyTotals = {{}};
+    dates.forEach(d => {{
+      dailyTotals[d] = bucketNames.reduce((s, b) => s + ((buckets[b] && buckets[b][d]) || 0), 0);
+    }});
+
+    function shortCol(dateStr) {{
+      const dt = new Date(dateStr + 'T00:00:00');
+      return dt.toLocaleDateString('en-IN', {{ day: 'numeric', month: 'short' }});
+    }}
+
+    // Build header
+    let headerCells = `<th style="text-align:left;min-width:160px;position:sticky;left:0;background:#f8fafc;z-index:2">Aging Bucket</th>`;
+    dates.forEach(d => {{
+      headerCells += `<th style="text-align:center;min-width:75px;white-space:nowrap;font-size:11px">${{shortCol(d)}}</th>`;
+    }});
+
+    // Build body rows
+    let bodyRows = '';
+    bucketNames.forEach((label, i) => {{
+      const color = BUCKET_COLORS[i];
+      let cells = `<td style="position:sticky;left:0;background:#fff;z-index:1;white-space:nowrap">
+        <span class="dot" style="background:${{color}}"></span>${{label}}
+      </td>`;
+
+      dates.forEach(d => {{
+        const count = (buckets[label] && buckets[label][d]) || 0;
+        const total = dailyTotals[d] || 1;
+        const pct = (count / total * 100).toFixed(1);
+        const dlUrl = `/api/download-filtered?date=${{d}}&bucket=${{encodeURIComponent(label)}}`;
+        cells += `<td class="num" style="font-size:11px;cursor:pointer" title="${{count.toLocaleString()}} tickets — click to download" onclick="window.location.href='${{dlUrl}}'">
+          ${{count > 0 ? pct + '%' : '—'}}
+          ${{count > 0 ? '<div style=\\"font-size:9px;color:#94a3b8;font-weight:400\\">' + count.toLocaleString() + '</div>' : ''}}
+        </td>`;
+      }});
+
+      bodyRows += `<tr data-agingrow="${{label}}">${{cells}}</tr>`;
+    }});
+
+    // TOTAL row
+    let totalCells = `<td style="position:sticky;left:0;background:#f1f5f9;z-index:1;font-weight:700">TOTAL</td>`;
+    dates.forEach(d => {{
+      totalCells += `<td class="num" style="font-weight:700;font-size:11px">${{(dailyTotals[d] || 0).toLocaleString()}}</td>`;
+    }});
+
+    const tableHtml = `
+      <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
+        <table style="min-width:100%;border-collapse:collapse">
+          <thead><tr style="background:#f8fafc;border-bottom:2px solid var(--border)">${{headerCells}}</tr></thead>
+          <tbody>
+            ${{bodyRows}}
+            <tr style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:var(--text2);margin-top:6px">
+        Showing ${{dates.length}} day(s) from ${{shortCol(dates[0])}} to ${{shortCol(dates[dates.length - 1])}} &mdash; each cell shows % of daily internet issues total + count
+      </div>`;
+
+    container.innerHTML = tableHtml;
+
+    // Build filter dropdown
+    const checkedCount = bucketNames.length;
+    const totalCount = bucketNames.length;
+    let filterItems = '';
+    bucketNames.forEach((label, i) => {{
+      const color = BUCKET_COLORS[i];
+      filterItems += `<label style="display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer;font-size:12px;white-space:nowrap">
+        <input type="checkbox" checked data-agingtrend="${{label}}" onchange="filterAgingTrend()"
+               style="accent-color:${{color}};cursor:pointer"> ${{label}}
+      </label>`;
+    }});
+
+    const filterHtml = `
+      <div style="position:relative;display:inline-block">
+        <button onclick="document.getElementById('agingTrendDropdown').classList.toggle('show')"
+                style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px">
+          &#9776; Filter Buckets <span id="agingTrendFilterCount">(${{checkedCount}}/${{totalCount}})</span> &#9660;
+        </button>
+        <div id="agingTrendDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:200px;max-height:300px;overflow-y:auto">
+          <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
+            <button onclick="document.querySelectorAll('#agingTrendDropdown input[data-agingtrend]').forEach(c=>c.checked=true);filterAgingTrend()"
+                    style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">Select All</button>
+            <button onclick="document.querySelectorAll('#agingTrendDropdown input[data-agingtrend]').forEach(c=>c.checked=false);filterAgingTrend()"
+                    style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">Deselect All</button>
+          </div>
+          ${{filterItems}}
+        </div>
+      </div>`;
+
+    const fc = document.getElementById('agingTrendFilterContainer');
+    if (fc) fc.innerHTML = filterHtml;
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function(e) {{
+      const dd = document.getElementById('agingTrendDropdown');
+      const container = document.getElementById('agingTrendFilterContainer');
+      if (dd && container && !container.contains(e.target)) dd.classList.remove('show');
+    }});
+
+  }} catch(e) {{
+    container.innerHTML = '<div class="loading">Could not load aging trend</div>';
+  }}
+}}
+
+// Show/hide aging rows and recalculate totals
+window.filterAgingTrend = function() {{
+  const checked = Array.from(document.querySelectorAll('#agingTrendDropdown input[data-agingtrend]:checked')).map(c => c.getAttribute('data-agingtrend'));
+  const totalCount = document.querySelectorAll('#agingTrendDropdown input[data-agingtrend]').length;
+  document.getElementById('agingTrendFilterCount').textContent = `(${{checked.length}}/${{totalCount}})`;
+
+  const table = document.querySelector('#agingTrendContent table');
+  if (!table) return;
+  const rows = table.querySelectorAll('tbody tr');
+  let totalRow = null;
+
+  rows.forEach(row => {{
+    const firstTd = row.querySelector('td');
+    if (!firstTd) return;
+    const text = firstTd.textContent.trim();
+    if (text === 'TOTAL') {{
+      totalRow = row;
+      return;
+    }}
+    const agingLabel = row.getAttribute('data-agingrow');
+    row.style.display = agingLabel && checked.includes(agingLabel) ? '' : 'none';
+  }});
+
+  // Recalculate TOTAL and %
+  if (totalRow && window._agingTrendDates && window._agingTrendBuckets) {{
+    const dates = window._agingTrendDates;
+    const buckets = window._agingTrendBuckets;
+    const tds = totalRow.querySelectorAll('td');
+
+    dates.forEach((d, i) => {{
+      let filteredTotal = 0;
+      checked.forEach(b => {{
+        filteredTotal += (buckets[b] && buckets[b][d]) || 0;
+      }});
+      if (tds[i + 1]) tds[i + 1].textContent = filteredTotal.toLocaleString();
+    }});
+
+    rows.forEach(row => {{
+      if (row === totalRow || row.style.display === 'none') return;
+      const agingLabel = row.getAttribute('data-agingrow');
+      if (!agingLabel) return;
+      const cells = row.querySelectorAll('td');
+      dates.forEach((d, i) => {{
+        const count = (buckets[agingLabel] && buckets[agingLabel][d]) || 0;
+        let filteredTotal = 0;
+        checked.forEach(b => {{
+          filteredTotal += (buckets[b] && buckets[b][d]) || 0;
+        }});
+        const pct = filteredTotal > 0 ? (count / filteredTotal * 100).toFixed(1) : '0.0';
+        if (cells[i + 1]) {{
+          cells[i + 1].innerHTML = count > 0
+            ? pct + '%<div style="font-size:9px;color:#94a3b8;font-weight:400">' + count.toLocaleString() + '</div>'
+            : '—';
+        }}
+      }});
+    }});
+  }}
+}}
+
+function applyAgingTrendFilter() {{
+  const from = document.getElementById('agingTrendFrom').value;
+  const to = document.getElementById('agingTrendTo').value;
+  if (!from || !to) {{
+    alert('Please select both FROM and TO dates');
+    return;
+  }}
+  if (from > to) {{
+    alert('FROM date must be before TO date');
+    return;
+  }}
+  const d1 = new Date(from), d2 = new Date(to);
+  const diff = (d2 - d1) / (1000 * 60 * 60 * 24);
+  if (diff > 120) {{
+    alert('Max range is 120 days');
+    return;
+  }}
+  loadAgingDailyTrend(from, to);
 }}
 
 // ========== HEATMAP (Queue x Aging) ==========

@@ -33,6 +33,7 @@ from history_db import (
     get_category_daily_trend,
     get_category_l4_daily_trend,
     get_tickets_for_download,
+    get_aging_daily_trend,
     init_db,
     AGENT_LIST,
     get_agent_dates,
@@ -370,6 +371,15 @@ def api_category_daily_trend():
     date_to = request.args.get("to")
     if date_from and date_to:
         return jsonify(get_category_daily_trend(date_from, date_to))
+    return jsonify({"error": "from and to required"}), 400
+
+
+@app.route("/api/aging-daily-trend")
+def api_aging_daily_trend():
+    date_from = request.args.get("from")
+    date_to = request.args.get("to")
+    if date_from and date_to:
+        return jsonify(get_aging_daily_trend(date_from, date_to))
     return jsonify({"error": "from and to required"}), 400
 
 

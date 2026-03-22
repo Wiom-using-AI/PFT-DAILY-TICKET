@@ -768,6 +768,59 @@ def get_category_daily_trend(date_from, date_to):
     }
 
 
+def get_aging_daily_trend(date_from, date_to):
+    """Return aging bucket counts for each date in the range.
+    Returns: {
+        'dates': ['2026-03-18', '2026-03-19', ...],
+        'buckets': {
+            '< 4h': {'2026-03-18': 307, ...},
+            '4h - 12h': {'2026-03-18': 40, ...},
+            ...
+        }
+    }
+    """
+    conn = get_connection()
+    c = conn.cursor()
+
+    bucket_keys = [
+        ('bucket_lt4h', '< 4h'),
+        ('bucket_4_12h', '4h - 12h'),
+        ('bucket_12_24h', '12h - 24h'),
+        ('bucket_24_36h', '24h - 36h'),
+        ('bucket_36_48h', '36h - 48h'),
+        ('bucket_48_72h', '48h - 72h'),
+        ('bucket_72_120h', '72h - 120h'),
+        ('bucket_gt120h', '> 120h'),
+    ]
+
+    c.execute("""
+        SELECT report_date, bucket_lt4h, bucket_4_12h, bucket_12_24h,
+               bucket_24_36h, bucket_36_48h, bucket_48_72h,
+               bucket_72_120h, bucket_gt120h
+        FROM daily_summary
+        WHERE report_date >= ? AND report_date <= ?
+        ORDER BY report_date ASC
+    """, (date_from, date_to))
+    rows = c.fetchall()
+    conn.close()
+
+    dates = []
+    buckets = {}
+    for bk, bl in bucket_keys:
+        buckets[bl] = {}
+
+    for row in rows:
+        rd = row["report_date"]
+        dates.append(rd)
+        for bk, bl in bucket_keys:
+            buckets[bl][rd] = row[bk] or 0
+
+    return {
+        "dates": dates,
+        "buckets": buckets,
+    }
+
+
 def get_category_l4_daily_trend(date_from, date_to, l3_category):
     """Return L4 breakdown for a specific L3 category across a date range.
     Returns: {
