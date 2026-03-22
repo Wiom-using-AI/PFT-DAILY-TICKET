@@ -702,6 +702,121 @@ def generate_dashboard_html():
     <a href="{MASTER_SHEET_URL}" target="_blank" class="btn btn-primary">&#128196; Master Sheet</a>
     <button class="btn btn-download" onclick="downloadAll()">&#11015; Download All Data</button>
     <button class="btn" onclick="window.print()">&#128424; Print</button>
+    <button class="btn" onclick="openRulesModal()" style="font-size:11px;padding:4px 10px">&#128220; Rules</button>
+  </div>
+</div>
+
+<!-- Rules Modal -->
+<div id="rulesModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:10000;justify-content:center;align-items:center">
+  <div style="background:#fff;width:90%;max-width:800px;max-height:85vh;border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.3);display:flex;flex-direction:column">
+    <div style="padding:16px 24px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center;background:#f8fafc">
+      <h2 style="margin:0;font-size:16px;color:#1a1a2e">&#128220; PFT Agent Dashboard &mdash; Rules &amp; Configuration</h2>
+      <button onclick="closeRulesModal()" style="background:none;border:none;font-size:22px;cursor:pointer;color:#666;padding:0 4px">&times;</button>
+    </div>
+    <div style="padding:24px;overflow-y:auto;font-size:13px;line-height:1.7;color:#333" id="rulesContent">
+
+      <h3 style="color:#1a1a2e;border-bottom:2px solid #3b82f6;padding-bottom:4px;margin-top:0">&#128260; Daily Agent Execution</h3>
+      <ol>
+        <li><b>Trigger:</b> Runs daily, checks Gmail for the morning pending report email</li>
+        <li><b>Email source:</b> <code>no-reply-report@kapturecrm.com</code></li>
+        <li><b>Subject match:</b> "Queue wise pending report last 60 days"</li>
+        <li><b>Only first email:</b> If multiple emails arrive with same subject, only the FIRST one is used &mdash; later ones are IGNORED</li>
+        <li><b>Retry logic:</b> If email hasn't arrived, retry every <b>5 minutes</b> until <b>12:00 PM IST</b></li>
+        <li><b>Deadline:</b> If no email by 12:00 PM, stop retrying and log a failure message</li>
+      </ol>
+
+      <h3 style="color:#1a1a2e;border-bottom:2px solid #10b981;padding-bottom:4px">&#128451; Data Storage Rules</h3>
+      <ol start="7">
+        <li><b>Ticket-level data (raw rows):</b> Keep for <b>45 days</b> only, then auto-delete</li>
+        <li><b>Daily summary numbers:</b> Keep <b>forever</b> (infinite retention) &mdash; only ~1 KB per day</li>
+        <li><b>Router Pickup:</b> Do NOT store individual ticket rows &mdash; only keep the <b>daily count</b> in category breakdown</li>
+        <li><b>All other categories</b> (Internet Issues, Refund, Payment Issues, etc.): Store full ticket-level data</li>
+        <li><b>New Tickets CSV cache:</b> Save at processing time, available for download until <b>11:59 PM</b> that day, then auto-delete</li>
+        <li><b>Database cleanup:</b> Runs after each daily agent execution</li>
+      </ol>
+
+      <h3 style="color:#1a1a2e;border-bottom:2px solid #f59e0b;padding-bottom:4px">&#128202; Dashboard &mdash; KPI Summary Cards</h3>
+      <ol start="13">
+        <li><b>7 cards:</b> Total Pending, Internet Issues, Created on Report Day, Critical (&gt;48h), Partner Queue, CX High Pain, PX-Send to Wiom</li>
+        <li><b>Single day view:</b> Show raw numbers</li>
+        <li><b>Multi-day view:</b> Aggregation options &mdash; <b>Average</b> (default), Sum, Median, Min, Max, Unique</li>
+        <li><b>Unique mode:</b> Shows deduplicated ticket count + % of total sum</li>
+        <li><b>Delta comparison:</b> Show change vs previous period's average</li>
+      </ol>
+
+      <h3 style="color:#1a1a2e;border-bottom:2px solid #8b5cf6;padding-bottom:4px">&#128200; Ticket Bifurcation (Category Summary)</h3>
+      <ol start="18">
+        <li><b>% values:</b> Center-aligned in table cells</li>
+        <li><b>Expandable L4 sub-rows:</b> Click on any L3 category to expand Level 4 breakdown</li>
+        <li><b>L4 contribution %:</b> Calculated on the <b>category total</b> (not grand total)</li>
+        <li><b>Click-to-download:</b> Clicking any % value downloads a raw CSV of those tickets</li>
+        <li><b>Filter:</b> Multi-category filter with checkbox dropdown</li>
+      </ol>
+
+      <h3 style="color:#1a1a2e;border-bottom:2px solid #ef4444;padding-bottom:4px">&#9203; Ticket Aging Breakdown</h3>
+      <ol start="23">
+        <li><b>Separate independent section</b> (not inside another section)</li>
+        <li><b>Display format:</b> Number on top (bold), % below it (small gray text)</li>
+        <li><b>Date range:</b> Show last 7 days of data including today</li>
+        <li><b>Filters:</b> Same date range + filter options as Category Summary</li>
+        <li><b>L3/L4 multi-select:</b> Checkbox dropdown filters for Disposition Folder Level 3 and Level 4</li>
+        <li><b>Combined filtering:</b> Can select multiple L3 + multiple L4 categories together</li>
+        <li><b>TOTAL row updates:</b> Recalculates based on selected filters</li>
+        <li><b>Draggable/movable:</b> Section can be reordered like other dashboard sections</li>
+        <li><b>No distribution column:</b> Bar chart column removed</li>
+      </ol>
+
+      <h3 style="color:#1a1a2e;border-bottom:2px solid #6b7280;padding-bottom:4px">&#128465; Removed Sections</h3>
+      <ol start="32">
+        <li>Aging Distribution chart &mdash; Removed</li>
+        <li>Queue Split doughnut chart &mdash; Removed</li>
+        <li>Queue x Aging Heatmap &mdash; Removed</li>
+        <li>Daily Trend line chart &mdash; Removed</li>
+      </ol>
+
+      <h3 style="color:#1a1a2e;border-bottom:2px solid #0ea5e9;padding-bottom:4px">&#128203; Master Sheet Comparison</h3>
+      <ol start="36">
+        <li><b>Snapshot is FIXED</b> at daily run time &mdash; does not change throughout the day</li>
+        <li><b>New Tickets CSV:</b> Cached in database at processing time, always downloadable even if master sheet was manually updated later</li>
+        <li><b>Live Upload Status:</b> "Check Now" button fetches current master sheet state for live comparison</li>
+        <li><b>Master sheet URL:</b> Google Sheets export as CSV</li>
+        <li><b>Comparison by:</b> ticket_no (column A of master sheet)</li>
+      </ol>
+
+      <h3 style="color:#1a1a2e;border-bottom:2px solid #14b8a6;padding-bottom:4px">&#9881; Processing Pipeline (Order)</h3>
+      <ol start="41">
+        <li>Search Gmail for today's email</li>
+        <li>Download the full pending report (.xlsx)</li>
+        <li>Filter Internet Issues tickets &mdash; save filtered file</li>
+        <li>Save daily snapshot to database (ticket_history + daily_summary)</li>
+        <li>Extract category breakdown + save full report (all categories except Router Pickup)</li>
+        <li>Fetch master sheet &rarr; compare &rarr; save snapshot &rarr; cache new tickets CSV</li>
+        <li>Cleanup old data (45-day ticket purge + expired cache removal)</li>
+      </ol>
+
+      <h3 style="color:#1a1a2e;border-bottom:2px solid #e11d48;padding-bottom:4px">&#128231; Gmail Configuration</h3>
+      <ol start="48">
+        <li><b>Gmail account:</b> avakash.gupta@wiom.in</li>
+        <li><b>Authentication:</b> Gmail App Password (stored as GMAIL_APP_PASSWORD env variable)</li>
+        <li><b>Protocol:</b> IMAP (imap.gmail.com:993)</li>
+      </ol>
+
+      <h3 style="color:#1a1a2e;border-bottom:2px solid #d946ef;padding-bottom:4px">&#128337; Aging Calculation</h3>
+      <ol start="51">
+        <li><b>Aging is calculated from:</b> The time the email/report came (report_time_ist), NOT from current time</li>
+        <li><b>Formula:</b> pending_hours = (report_time_ist - ticket_created_datetime) / 3600</li>
+        <li><b>Buckets:</b> 0-12h, 12-24h, 24-36h, 36-48h, 48-72h, 72-120h, &gt;120h</li>
+      </ol>
+
+      <h3 style="color:#1a1a2e;border-bottom:2px solid #f97316;padding-bottom:4px">&#127760; Deployment</h3>
+      <ol start="54">
+        <li><b>Platform:</b> Vercel (auto-deploys from GitHub push)</li>
+        <li><b>URL:</b> pft-daily-ticket.vercel.app</li>
+        <li><b>Database:</b> SQLite file stored in repo (via Git LFS for files &gt;100 MB)</li>
+        <li><b>Local server:</b> Available via dashboard_server.py for local testing</li>
+      </ol>
+
+    </div>
   </div>
 </div>
 
@@ -2707,6 +2822,17 @@ async function showTrail(ticketNo) {{
 function closeTrail() {{ document.getElementById('trailModal').classList.remove('show'); }}
 
 // ========== DOWNLOADS ==========
+function openRulesModal() {{
+  document.getElementById('rulesModal').style.display = 'flex';
+}}
+function closeRulesModal() {{
+  document.getElementById('rulesModal').style.display = 'none';
+}}
+// Close on clicking outside the modal content
+document.getElementById('rulesModal').addEventListener('click', function(e) {{
+  if (e.target === this) closeRulesModal();
+}});
+
 function downloadAll() {{
   window.open(`/api/download?date=${{currentDate}}&section=all`);
 }}
