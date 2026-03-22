@@ -499,16 +499,16 @@ def generate_dashboard_html():
     color:var(--text);font-size:11px;cursor:pointer}}
   .date-info{{font-size:12px;color:var(--text2);margin-left:auto;font-weight:500}}
 
-  .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:18px}}
-  .card{{background:var(--card);border-radius:10px;padding:16px;border:1px solid var(--border);box-shadow:var(--shadow);
-    transition:box-shadow .2s}}
+  .cards{{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:18px}}
+  .card{{background:var(--card);border-radius:8px;padding:10px 10px 8px;border:1px solid var(--border);box-shadow:var(--shadow);
+    transition:box-shadow .2s;min-width:0}}
   .card:hover{{box-shadow:var(--shadow-md)}}
-  .card-label{{font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;font-weight:600}}
-  .card-value{{font-size:28px;font-weight:700;letter-spacing:-0.5px}}
+  .card-label{{font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+  .card-value{{font-size:22px;font-weight:700;letter-spacing:-0.5px}}
   .card-value.green{{color:var(--green)}} .card-value.red{{color:var(--red)}}
   .card-value.orange{{color:var(--orange)}} .card-value.blue{{color:var(--accent)}}
-  .card-sub{{font-size:10px;color:var(--text2);margin-top:3px}}
-  .card-delta{{font-size:10px;margin-top:3px;font-weight:600}}
+  .card-sub{{font-size:9px;color:var(--text2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+  .card-delta{{font-size:9px;margin-top:2px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
   .card-delta.up{{color:var(--red)}} .card-delta.down{{color:var(--green)}} .card-delta.neutral{{color:var(--text2)}}
 
   .section{{background:var(--card);border-radius:10px;padding:18px;border:1px solid var(--border);margin-bottom:18px;
@@ -838,6 +838,7 @@ let currentDate = null;
 let currentRangeMode = false;  // true when showing aggregated range data
 let currentRangeFrom = null;
 let currentRangeTo = null;
+let currentPeriodType = null;  // 'week', 'month', or null for single-date/custom
 let prevSummary = null;
 let allTickets = [];
 let filteredTickets = [];
@@ -902,6 +903,7 @@ function navigatePeriod(type, n) {{
   let startStr, endStr, periodLabel;
 
   if (type === 'wk') {{
+    currentPeriodType = 'week';
     periodLabel = `Wk-${{n}}`;
     // Week: Monday-based. Wk-0 = current week Mon..today, Wk-1 = last week Mon..Sun, etc.
     const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon, ...
@@ -921,6 +923,7 @@ function navigatePeriod(type, n) {{
       endStr = localDateStr(weekEnd);
     }}
   }} else if (type === 'm') {{
+    currentPeriodType = 'month';
     periodLabel = `M-${{n}}`;
     // Month: M-0 = current month, M-1 = previous month, etc.
     const targetMonth = new Date(today.getFullYear(), today.getMonth() - n, 1);
@@ -967,6 +970,7 @@ function applyDateRange() {{
   }}
 
   // If it's a single date, load normally; otherwise aggregate
+  currentPeriodType = null;
   if (from === to) {{
     loadDate(from);
   }} else {{
@@ -1043,6 +1047,7 @@ async function loadDate(date) {{
   currentRangeMode = false;
   currentRangeFrom = null;
   currentRangeTo = null;
+  currentPeriodType = null;
   document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
 
   const idx = availableDates.indexOf(date);
@@ -1658,10 +1663,14 @@ async function refreshLiveStatus() {{
 function delta(curr, prev, key, invert=false) {{
   if (!prev || prev[key] == null || curr[key] == null) return '';
   const diff = curr[key] - prev[key];
-  if (diff === 0) return '<div class="card-delta neutral">— No change</div>';
+  let vsLabel = 'vs prev day';
+  if (currentPeriodType === 'week') vsLabel = 'vs prev week';
+  else if (currentPeriodType === 'month') vsLabel = 'vs prev month';
+  else if (currentRangeMode) vsLabel = 'vs prev period';
+  if (diff === 0) return `<div class="card-delta neutral">&mdash; No change ${{vsLabel}}</div>`;
   const arrow = diff > 0 ? '&#9650;' : '&#9660;';
   const cls = invert ? (diff > 0 ? 'down' : 'up') : (diff > 0 ? 'up' : 'down');
-  return `<div class="card-delta ${{cls}}">${{arrow}} ${{Math.abs(diff)}} vs prev day</div>`;
+  return `<div class="card-delta ${{cls}}">${{arrow}} ${{Math.abs(diff)}} ${{vsLabel}}</div>`;
 }}
 
 // ========== SUMMARY CARDS ==========
