@@ -60,6 +60,28 @@ def take_screenshot():
         }}""")
         page.wait_for_timeout(1000)
 
+        # Expand L4 sub-rows for selected categories
+        print("[Slack] Expanding L4 sub-rows...")
+        for cat in SELECTED_CATEGORIES:
+            try:
+                page.evaluate(f"""() => {{
+                    if (typeof togglePivotL4 === 'function') {{
+                        const rows = document.querySelectorAll('#pivotBody tr');
+                        for (const row of rows) {{
+                            const td = row.querySelector('td');
+                            if (td && td.textContent.includes('{cat}')) {{
+                                togglePivotL4('{cat}', row);
+                                break;
+                            }}
+                        }}
+                    }}
+                }}""")
+                page.wait_for_timeout(1500)  # Wait for API response
+            except Exception as ex:
+                print(f"[Slack] Could not expand L4 for {cat}: {ex}")
+
+        page.wait_for_timeout(1000)
+
         # Screenshot only the header + pivot table (not the summary/chart below)
         # We select the section header and the pivot table wrapper together
         pivot_area = page.locator("#categorySection .section-header, #pivotTable")
