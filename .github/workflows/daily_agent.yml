@@ -1,0 +1,64 @@
+name: PFT Daily Agent
+
+on:
+  schedule:
+    # Run at 10:15 AM IST (4:45 AM UTC) every day
+    - cron: '45 4 * * *'
+  workflow_dispatch:
+    # Allow manual trigger from GitHub Actions tab
+
+jobs:
+  run-daily-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install openpyxl
+
+      - name: Run Daily Agent
+        env:
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          python run_daily_agent.py 2>&1 | tee daily_agent_log.txt
+          echo "Agent completed successfully"
+
+      - name: Commit and push updated database
+        run: |
+          git config user.name "PFT Daily Agent"
+          git config user.email "pft-agent@wiom.in"
+          git add ticket_history.db
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "Daily update: $(date +%Y-%m-%d) ticket data
+
+          Auto-run by GitHub Actions
+
+          Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+          git push origin main
+
+      - name: Verify data
+        run: |
+          python -c "
+          from history_db import get_daily_summary
+          from datetime import datetime, timezone, timedelta
+          IST = timezone(timedelta(hours=5, minutes=30))
+          d = datetime.now(IST).strftime('%Y-%m-%d')
+          s = get_daily_summary(d)
+          if s:
+              print(f'Date: {d}')
+              print(f'Total Pending: {s[\"total_pending\"]}')
+              print(f'Internet Issues: {s[\"total_internet\"]}')
+              print(f'New to Upload: {s[\"master_new\"]}')
+          else:
+              print(f'WARNING: No data found for {d}')
+          "
