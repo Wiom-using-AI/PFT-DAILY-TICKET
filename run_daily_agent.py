@@ -281,24 +281,33 @@ def main():
             result = save_master_snapshot(report_date, master_ids, ticket_ids)
             log(f"Master snapshot: {result['already']} existing, {result['new']} new to upload")
 
-            # Step 6b: Cache new tickets CSV for download (available until 11:59 PM)
+            # Step 6b: Cache new tickets CSV from FULL RAW Excel (all 96 columns)
             try:
-                from history_db import save_new_tickets_cache, get_all_tickets_for_date
+                from history_db import save_new_tickets_cache
                 new_ids_set = set(result.get("new_ids", []))
                 if new_ids_set:
-                    all_tickets = get_all_tickets_for_date(report_date)
-                    new_tickets = [t for t in all_tickets if t.get("ticket_no") in new_ids_set]
-                    if new_tickets:
-                        # Build CSV string
-                        csv_buffer = io.StringIO()
-                        writer = csv.DictWriter(csv_buffer, fieldnames=new_tickets[0].keys())
-                        writer.writeheader()
-                        writer.writerows(new_tickets)
-                        csv_data = csv_buffer.getvalue()
-                        save_new_tickets_cache(report_date, csv_data, len(new_tickets))
-                        log(f"Cached {len(new_tickets)} new tickets CSV for download")
-                    else:
-                        log("No new tickets to cache")
+                    log(f"Building full raw CSV for {len(new_ids_set)} new tickets from Excel...")
+                    import openpyxl as _opx_raw
+                    _wb_raw = _opx_raw.load_workbook(report_path, read_only=True)
+                    _ws_raw = _wb_raw.active
+                    _raw_headers = [str(cell.value or "") for cell in next(_ws_raw.iter_rows(min_row=1, max_row=1))]
+                    _ticket_col = _raw_headers.index("Ticket No") if "Ticket No" in _raw_headers else 0
+
+                    csv_buffer = io.StringIO()
+                    writer = csv.writer(csv_buffer)
+                    writer.writerow(_raw_headers)
+
+                    new_count = 0
+                    for _row in _ws_raw.iter_rows(min_row=2, values_only=True):
+                        _tid = str(_row[_ticket_col] or "").strip()
+                        if _tid in new_ids_set:
+                            writer.writerow([str(v or "") for v in _row])
+                            new_count += 1
+
+                    _wb_raw.close()
+                    csv_data = csv_buffer.getvalue()
+                    save_new_tickets_cache(report_date, csv_data, new_count)
+                    log(f"Cached {new_count} new tickets with all {len(_raw_headers)} columns")
                 else:
                     log("No new ticket IDs — skipping CSV cache")
             except Exception as ce:
