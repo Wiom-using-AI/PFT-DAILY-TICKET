@@ -378,6 +378,16 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(trend)
             else:
                 self.send_json({"error": "from and to required"}, 400)
+        elif path == "/api/pivot-l4-breakdown":
+            date = params.get("date", [None])[0]
+            l3 = params.get("l3", [None])[0]
+            date_from = params.get("from", [None])[0]
+            date_to = params.get("to", [None])[0]
+            if l3:
+                from history_db import get_pivot_l4_breakdown
+                self.send_json(get_pivot_l4_breakdown(date, l3, date_from=date_from, date_to=date_to))
+            else:
+                self.send_json({"error": "l3 required"}, 400)
         elif path == "/api/unique-tickets":
             date_from = params.get("from", [None])[0]
             date_to = params.get("to", [None])[0]
@@ -1415,7 +1425,8 @@ window.filterPivotTable = function() {{
     const color = CAT_COLORS[cat] || '#94a3b8';
     const rowStyle = isInternet ? 'background:#eff6ff;font-weight:700' : '';
 
-    let cells = `<td style="position:sticky;left:0;background:${{isInternet ? '#eff6ff' : '#fff'}};z-index:1">
+    let cells = `<td style="position:sticky;left:0;background:${{isInternet ? '#eff6ff' : '#fff'}};z-index:1;cursor:pointer" onclick="togglePivotL4('${{cat.replace(/'/g, "\\\\'")}}', this.parentElement)">
+      <span style="display:inline-block;transition:transform 0.2s;font-size:9px;margin-right:4px" class="pivotArrow">&#9654;</span>
       <span class="dot" style="background:${{color}}"></span>${{cat}}${{isInternet ? ' &#9733;' : ''}}
     </td>`;
 
@@ -1464,6 +1475,69 @@ window.filterPivotTable = function() {{
 
   document.getElementById('pivotBody').innerHTML = bodyRows +
     `<tr style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr>`;
+}};
+
+// Toggle L4 sub-rows in pivot table
+window.togglePivotL4 = async function(l3Cat, rowEl) {{
+  const arrow = rowEl.querySelector('.pivotArrow');
+
+  // Check if L4 rows already exist — toggle visibility
+  let nextRow = rowEl.nextElementSibling;
+  const existing = [];
+  while (nextRow && nextRow.classList.contains('pivotL4Row') && nextRow.dataset.parentL3 === l3Cat) {{
+    existing.push(nextRow);
+    nextRow = nextRow.nextElementSibling;
+  }}
+
+  if (existing.length > 0) {{
+    const visible = existing[0].style.display !== 'none';
+    existing.forEach(r => r.style.display = visible ? 'none' : '');
+    arrow.style.transform = visible ? '' : 'rotate(90deg)';
+    return;
+  }}
+
+  // Fetch L4 data
+  arrow.style.transform = 'rotate(90deg)';
+  const pivot = window._pivotData;
+  const buckets = pivot.buckets;
+  const encL3 = encodeURIComponent(l3Cat);
+
+  let url = `/api/pivot-l4-breakdown?l3=${{encL3}}&date=${{currentDate}}`;
+  if (currentRangeFrom && currentRangeTo) {{
+    url = `/api/pivot-l4-breakdown?l3=${{encL3}}&from=${{currentRangeFrom}}&to=${{currentRangeTo}}`;
+  }}
+
+  const data = await api(url);
+  if (!data || !data.l4_categories || data.l4_categories.length === 0) {{
+    arrow.style.transform = '';
+    return;
+  }}
+
+  // Insert L4 rows after the L3 row
+  const l3Total = pivot.totals_by_cat[l3Cat] || 1;
+  let insertHtml = '';
+
+  data.l4_categories.forEach(l4 => {{
+    const l4Total = data.totals[l4] || 0;
+    const pct = ((l4Total / l3Total) * 100).toFixed(1);
+    let cells = `<td style="position:sticky;left:0;background:#fafbfc;z-index:1;padding-left:36px;font-size:12px;color:#64748b">
+      &#8627; ${{l4}} <span style="font-size:10px;color:#94a3b8">(${{pct}}%)</span>
+    </td>`;
+
+    buckets.forEach(b => {{
+      const val = (data.data[l4] && data.data[l4][b]) || 0;
+      if (val > 0) {{
+        cells += `<td class="num" style="font-size:12px;color:#64748b">${{val.toLocaleString()}}</td>`;
+      }} else {{
+        cells += `<td class="num" style="color:#e2e8f0;font-size:12px">—</td>`;
+      }}
+    }});
+    cells += `<td class="num" style="font-size:12px;font-weight:600;color:#64748b">${{l4Total.toLocaleString()}}</td>`;
+
+    insertHtml += `<tr class="pivotL4Row" data-parent-l3="${{l3Cat}}" style="background:#fafbfc;border-left:3px solid #e2e8f0">${{cells}}</tr>`;
+  }});
+
+  rowEl.insertAdjacentHTML('afterend', insertHtml);
 }};
 
 // ========== CATEGORY DAILY TREND ==========

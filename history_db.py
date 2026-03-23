@@ -668,6 +668,58 @@ def get_category_aging_pivot(report_date_str):
     }
 
 
+def get_pivot_l4_breakdown(report_date_str, l3_category, date_from=None, date_to=None):
+    """
+    Get L4 sub-breakdown for a specific L3 category in pivot table format.
+    Returns: { "l4_categories": [...], "data": {"L4Cat": {"0-12 hrs": 5, ...}}, "totals": {...} }
+    """
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+
+    if date_from and date_to:
+        c.execute("""
+            SELECT disposition_l4, aging_bucket, COUNT(*) as cnt
+            FROM full_report_history
+            WHERE report_date >= ? AND report_date <= ? AND disposition_l3 = ?
+            GROUP BY disposition_l4, aging_bucket
+        """, (date_from, date_to, l3_category))
+    else:
+        c.execute("""
+            SELECT disposition_l4, aging_bucket, COUNT(*) as cnt
+            FROM full_report_history
+            WHERE report_date = ? AND disposition_l3 = ?
+            GROUP BY disposition_l4, aging_bucket
+        """, (report_date_str, l3_category))
+
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        return {"l4_categories": [], "data": {}, "totals": {}}
+
+    data = {}
+    for row in rows:
+        l4 = row["disposition_l4"] or "(No L4)"
+        db_bucket = row["aging_bucket"] or "Unknown"
+        cnt = row["cnt"]
+        if l4 not in data:
+            data[l4] = {}
+        for pivot_label, db_labels in PIVOT_BUCKETS:
+            if db_bucket in db_labels:
+                data[l4][pivot_label] = data[l4].get(pivot_label, 0) + cnt
+                break
+
+    totals = {l4: sum(buckets.values()) for l4, buckets in data.items()}
+    sorted_l4 = sorted(totals.keys(), key=lambda x: totals[x], reverse=True)
+
+    return {
+        "l4_categories": sorted_l4,
+        "data": data,
+        "totals": totals,
+    }
+
+
 def get_full_tickets_by_category_bucket(report_date_str, category=None, bucket=None):
     """
     Get raw ticket data from full report filtered by category and/or aging bucket.

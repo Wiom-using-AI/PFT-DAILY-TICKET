@@ -343,6 +343,19 @@ def api_refresh_master():
     return jsonify({"status": "refreshing"})
 
 
+@app.route("/api/pivot-l4-breakdown")
+def api_pivot_l4():
+    from history_db import get_pivot_l4_breakdown
+    date = request.args.get("date")
+    l3 = request.args.get("l3")
+    date_from = request.args.get("from")
+    date_to = request.args.get("to")
+    if l3:
+        result = get_pivot_l4_breakdown(date, l3, date_from=date_from, date_to=date_to)
+        return jsonify(result)
+    return jsonify({"error": "l3 required"}), 400
+
+
 # ========== RANGE AGGREGATION ROUTES ==========
 
 @app.route("/api/summary/range")
