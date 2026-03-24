@@ -1,9 +1,11 @@
 name: Daily PFT Ticket Update
 
-# Starts at 10:15 AM IST, retries every 15 min until email found (max till 4 PM)
+# Primary: 10:15 AM IST, Backup: 10:30 AM IST (in case GitHub delays the first)
+# "Already updated" check prevents duplicate runs
 on:
   schedule:
-    - cron: '45 4 * * *'   # Every day at 10:15 AM IST (including Sunday)
+    - cron: '45 4 * * *'   # Primary: 10:15 AM IST
+    - cron: '0 5 * * *'    # Backup: 10:30 AM IST
   workflow_dispatch:  # Allow manual trigger from GitHub UI
 
 jobs:
