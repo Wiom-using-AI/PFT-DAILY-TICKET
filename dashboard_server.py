@@ -45,6 +45,7 @@ from history_db import (
     get_attendance,
     assign_tickets_round_robin,
     get_agent_assignments,
+    get_agent_active_tickets,
     get_agent_summary,
     update_agent_ticket,
     reassign_tickets,
@@ -476,11 +477,20 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(get_agent_summary(date))
             else:
                 self.send_json({"error": "date required"}, 400)
+        elif path == "/api/agent/active-tickets":
+            # Get ALL active tickets held by agents: today's own + temp-redistributed from past dates
+            date = params.get("date", [None])[0]
+            agent = params.get("agent", [None])[0]
+            if date:
+                rows = get_agent_active_tickets(date, agent if agent else None)
+                self.send_json(rows)
+            else:
+                self.send_json({"error": "date required"}, 400)
         elif path == "/api/agent/download":
             date = params.get("date", [None])[0]
             agent = params.get("agent", [None])[0]
             if date:
-                rows = get_agent_assignments(date, agent if agent else None)
+                rows = get_agent_active_tickets(date, agent if agent else None)
                 aname = (agent or "all").replace(" ", "_")
                 self.send_csv(rows, f"agent_tickets_{date}_{aname}.csv")
             else:
@@ -3174,29 +3184,683 @@ def generate_agent_html():
 <title>PFT Agent Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root { --accent: #1a73e8; --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0; --text: #1e293b; --text2: #64748b; }
+:root {
+  --accent: #7c3aed; --accent2: #6d28d9; --bg: #f8fafc; --card: #ffffff;
+  --border: #e2e8f0; --text: #1e293b; --text2: #64748b; --text3: #94a3b8;
+  --green: #16a34a; --green-bg: #dcfce7; --red: #dc2626; --red-bg: #fee2e2;
+  --blue: #2563eb; --blue-bg: #dbeafe; --orange: #ea580c; --orange-bg: #ffedd5;
+  --yellow: #ca8a04; --yellow-bg: #fef9c3;
+}
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); font-size:13px; }
-.topbar { background:var(--card); border-bottom:1px solid var(--border); padding:12px 24px; display:flex; align-items:center; gap:16px; position:sticky; top:0; z-index:100; }
-.topbar h1 { font-size:16px; font-weight:700; }
-.topbar a { color:var(--accent); text-decoration:none; font-size:12px; }
-.container { max-width:1600px; margin:0 auto; padding:16px 24px; }
-.empty-state { text-align:center; padding:100px 20px; color:var(--text2); }
-.empty-state h2 { font-size:24px; margin-bottom:12px; color:var(--text); }
-.empty-state p { font-size:14px; line-height:1.6; }
+
+/* Top bar */
+.topbar { background:var(--card); border-bottom:2px solid var(--accent); padding:10px 24px; display:flex; align-items:center; gap:16px; position:sticky; top:0; z-index:200; box-shadow:0 1px 3px rgba(0,0,0,0.06); }
+.topbar h1 { font-size:16px; font-weight:700; color:var(--accent); }
+.topbar a { color:var(--accent); text-decoration:none; font-size:12px; font-weight:500; }
+.topbar a:hover { text-decoration:underline; }
+.topbar-right { margin-left:auto; display:flex; align-items:center; gap:12px; }
+
+/* Controls bar */
+.controls { background:var(--card); border-bottom:1px solid var(--border); padding:12px 24px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; position:sticky; top:42px; z-index:190; }
+.controls label { font-size:11px; font-weight:600; text-transform:uppercase; color:var(--text2); letter-spacing:0.5px; }
+.controls select, .controls input[type="date"] {
+  padding:6px 10px; border:1px solid var(--border); border-radius:6px; font-size:13px;
+  font-family:inherit; background:var(--bg); color:var(--text); cursor:pointer;
+}
+.controls select:focus, .controls input[type="date"]:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 2px rgba(124,58,237,0.15); }
+
+/* Buttons */
+.btn { padding:7px 14px; border-radius:6px; font-size:12px; font-weight:600; font-family:inherit; border:1px solid var(--border); background:var(--card); color:var(--text); cursor:pointer; transition:all 0.15s; display:inline-flex; align-items:center; gap:5px; }
+.btn:hover { background:var(--bg); }
+.btn-accent { background:var(--accent); color:#fff; border-color:var(--accent); }
+.btn-accent:hover { background:var(--accent2); }
+.btn-green { background:var(--green); color:#fff; border-color:var(--green); }
+.btn-green:hover { background:#15803d; }
+.btn-red { background:var(--red); color:#fff; border-color:var(--red); }
+.btn-red:hover { background:#b91c1c; }
+.btn-sm { padding:4px 8px; font-size:11px; }
+.btn:disabled { opacity:0.5; cursor:not-allowed; }
+
+/* Container */
+.container { max-width:1800px; margin:0 auto; padding:16px 24px; }
+
+/* Attendance panel */
+.attendance-panel { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px 20px; margin-bottom:16px; }
+.attendance-panel h3 { font-size:13px; font-weight:600; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:12px; }
+.agent-chips { display:flex; flex-wrap:wrap; gap:8px; }
+.agent-chip { padding:6px 14px; border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; border:2px solid var(--border); background:var(--card); color:var(--text2); transition:all 0.15s; user-select:none; }
+.agent-chip.present { background:var(--green-bg); border-color:var(--green); color:var(--green); }
+.agent-chip:hover { transform:scale(1.03); }
+
+/* Summary cards */
+.summary-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:12px; margin-bottom:16px; }
+.agent-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px 16px; cursor:pointer; transition:all 0.15s; position:relative; }
+.agent-card:hover { border-color:var(--accent); box-shadow:0 2px 8px rgba(124,58,237,0.1); }
+.agent-card.active { border-color:var(--accent); background:linear-gradient(135deg, rgba(124,58,237,0.04), rgba(124,58,237,0.08)); box-shadow:0 0 0 2px rgba(124,58,237,0.2); }
+.agent-card .name { font-size:13px; font-weight:700; margin-bottom:4px; }
+.agent-card .count { font-size:28px; font-weight:700; color:var(--accent); }
+.agent-card .label { font-size:10px; color:var(--text3); text-transform:uppercase; letter-spacing:0.5px; }
+.agent-card.total-card { background:linear-gradient(135deg, var(--accent), var(--accent2)); color:#fff; }
+.agent-card.total-card .count { color:#fff; }
+.agent-card.total-card .label { color:rgba(255,255,255,0.7); }
+.agent-card.total-card .name { color:rgba(255,255,255,0.9); }
+
+/* Ticket table */
+.table-wrap { background:var(--card); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+.table-header { padding:12px 16px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:8px; }
+.table-header h3 { font-size:14px; font-weight:700; }
+.table-header .badge { background:var(--accent); color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; font-weight:700; }
+.table-scroll { overflow-x:auto; max-height:calc(100vh - 340px); overflow-y:auto; }
+table { width:100%; border-collapse:collapse; font-size:12px; }
+thead { position:sticky; top:0; z-index:10; }
+th { background:#f1f5f9; padding:8px 10px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--text2); border-bottom:2px solid var(--border); white-space:nowrap; }
+td { padding:7px 10px; border-bottom:1px solid #f1f5f9; vertical-align:top; }
+tr:hover td { background:rgba(124,58,237,0.02); }
+tr.agent-separator td { background:var(--accent); color:#fff; font-weight:700; font-size:12px; padding:6px 10px; }
+
+/* Editable cells */
+td.editable { position:relative; cursor:pointer; min-width:100px; }
+td.editable:hover { background:rgba(124,58,237,0.06); }
+td.editable .cell-val { min-height:18px; }
+td.editable .cell-val:empty::after { content:'—'; color:var(--text3); }
+td.editable textarea { width:100%; min-height:50px; padding:4px 6px; border:1.5px solid var(--accent); border-radius:4px; font-family:inherit; font-size:12px; resize:vertical; background:#fff; }
+td.editable select.cell-select { width:100%; padding:3px 6px; border:1.5px solid var(--accent); border-radius:4px; font-family:inherit; font-size:12px; }
+
+/* Status badges */
+.aging-badge { padding:2px 8px; border-radius:4px; font-size:10px; font-weight:700; white-space:nowrap; }
+.aging-critical { background:var(--red-bg); color:var(--red); }
+.aging-warn { background:var(--orange-bg); color:var(--orange); }
+.aging-ok { background:var(--green-bg); color:var(--green); }
+.aging-mid { background:var(--yellow-bg); color:var(--yellow); }
+
+/* Temp badge */
+.temp-badge { background:#ede9fe; color:#7c3aed; padding:1px 6px; border-radius:3px; font-size:9px; font-weight:700; margin-left:4px; }
+.own-badge { background:var(--blue-bg); color:var(--blue); padding:1px 6px; border-radius:3px; font-size:9px; font-weight:700; margin-left:4px; }
+
+/* Work status */
+.ws-pending { color:var(--orange); font-weight:600; }
+.ws-completed { color:var(--green); font-weight:600; }
+.ws-select { padding:2px 6px; border:1px solid var(--border); border-radius:4px; font-size:11px; font-family:inherit; cursor:pointer; }
+
+/* Card sub-stats */
+.card-sub-stats { display:flex; gap:8px; margin-top:6px; font-size:10px; }
+.card-sub-stats .stat { padding:1px 6px; border-radius:3px; }
+.stat-own { background:var(--blue-bg); color:var(--blue); }
+.stat-temp { background:#ede9fe; color:#7c3aed; }
+.stat-done { background:var(--green-bg); color:var(--green); }
+
+/* Row highlighting for temp tickets */
+tr.temp-row td { background:rgba(124,58,237,0.03); }
+tr.temp-row td:first-child { border-left:3px solid var(--accent); }
+
+/* Toast notification */
+.toast { position:fixed; bottom:20px; right:20px; background:#1e293b; color:#fff; padding:10px 20px; border-radius:8px; font-size:13px; font-weight:500; z-index:9999; opacity:0; transform:translateY(10px); transition:all 0.3s; pointer-events:none; }
+.toast.show { opacity:1; transform:translateY(0); }
+.toast.success { background:var(--green); }
+.toast.error { background:var(--red); }
+
+/* Loading spinner */
+.spinner { display:inline-block; width:16px; height:16px; border:2px solid rgba(124,58,237,0.2); border-top-color:var(--accent); border-radius:50%; animation:spin 0.6s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+/* Empty state */
+.empty-state { text-align:center; padding:60px 20px; color:var(--text2); }
+.empty-state h2 { font-size:20px; margin-bottom:8px; color:var(--text); }
+.empty-state p { font-size:13px; line-height:1.6; }
+
+/* Responsive */
+@media(max-width:768px) {
+  .controls { flex-direction:column; align-items:stretch; }
+  .summary-grid { grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); }
+  .table-scroll { max-height:60vh; }
+}
+
+/* Print */
+@media print {
+  .topbar, .controls, .attendance-panel, .btn { display:none !important; }
+  .table-scroll { max-height:none; overflow:visible; }
+}
 </style>
 </head>
 <body>
+
+<!-- Top bar -->
 <div class="topbar">
   <h1>PFT Agent Dashboard</h1>
-  <a href="/">Back to Main Dashboard</a>
-</div>
-<div class="container">
-  <div class="empty-state">
-    <h2>Agent Dashboard</h2>
-    <p>Coming soon. Data will be configured here.</p>
+  <a href="/">&#8592; Main Dashboard</a>
+  <div class="topbar-right">
+    <span id="statusText" style="font-size:11px;color:var(--text3)"></span>
   </div>
 </div>
+
+<!-- Controls bar -->
+<div class="controls">
+  <div>
+    <label>Report Date</label><br>
+    <select id="dateSelect" onchange="loadDate()"></select>
+  </div>
+  <div>
+    <label>Filter Agent</label><br>
+    <select id="agentFilter" onchange="filterTable()">
+      <option value="">All Agents</option>
+    </select>
+  </div>
+  <div style="margin-left:auto;display:flex;gap:8px;align-items:end">
+    <button class="btn btn-accent" onclick="doAssign()" id="assignBtn">Assign Tickets</button>
+    <button class="btn btn-red btn-sm" onclick="doReassign()" id="reassignBtn" title="Re-distribute tickets among present agents">Reassign</button>
+    <button class="btn" onclick="downloadCSV()">Download CSV</button>
+    <button class="btn btn-sm" onclick="window.print()" title="Print">Print</button>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- Attendance Panel -->
+  <div class="attendance-panel" id="attendancePanel">
+    <h3>Agent Attendance &mdash; <span id="presentCount">0</span>/<span id="totalCount">0</span> Present</h3>
+    <div class="agent-chips" id="agentChips"></div>
+    <div style="margin-top:10px;display:flex;gap:8px">
+      <button class="btn btn-green btn-sm" onclick="saveAttendance()">Save Attendance</button>
+      <button class="btn btn-sm" onclick="selectAllAgents()">Select All</button>
+      <button class="btn btn-sm" onclick="deselectAllAgents()">Deselect All</button>
+    </div>
+  </div>
+
+  <!-- Summary Cards -->
+  <div class="summary-grid" id="summaryGrid"></div>
+
+  <!-- Ticket Table -->
+  <div class="table-wrap" id="tableWrap" style="display:none">
+    <div class="table-header">
+      <h3>Assigned Tickets <span class="badge" id="ticketCount">0</span></h3>
+      <div id="tableActions" style="display:flex;gap:6px"></div>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:30px">#</th>
+            <th>Ticket No</th>
+            <th>Type</th>
+            <th>Work Status</th>
+            <th>Creation Date</th>
+            <th>Phone</th>
+            <th>Disposition L4</th>
+            <th>Customer Name</th>
+            <th>Partner</th>
+            <th>Queue</th>
+            <th>Reopen</th>
+            <th>Kapture Status</th>
+            <th>Aging</th>
+            <th>Ground Team Update</th>
+            <th>Assigned Date</th>
+            <th>Worked By</th>
+            <th>Ping</th>
+            <th>Cx Action</th>
+            <th>Px Call Status</th>
+            <th>Update Date</th>
+            <th>Agent Remark</th>
+            <th>Partner Concern</th>
+          </tr>
+        </thead>
+        <tbody id="ticketBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Empty state -->
+  <div class="empty-state" id="emptyState">
+    <h2>No Assignments Yet</h2>
+    <p>Select a date, mark agents as present, then click <b>Assign Tickets</b> to distribute tickets via round-robin.</p>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ---- State ----
+let currentDate = '';
+let agents = [];
+let attendance = {};
+let assignments = [];
+let agentSummary = {};
+
+// ---- Helpers ----
+function $(id) { return document.getElementById(id); }
+function toast(msg, type='') {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (type ? ' ' + type : '');
+  setTimeout(() => t.className = 'toast', 2500);
+}
+
+async function api(path, opts) {
+  try {
+    const r = await fetch(path, opts);
+    return await r.json();
+  } catch(e) { toast('API error: ' + e.message, 'error'); return null; }
+}
+
+function agingBadge(hours, bucket) {
+  if (!bucket) bucket = '';
+  let cls = 'aging-ok';
+  if (hours > 120) cls = 'aging-critical';
+  else if (hours > 48) cls = 'aging-critical';
+  else if (hours > 24) cls = 'aging-warn';
+  else if (hours > 12) cls = 'aging-mid';
+  const display = hours != null ? Math.round(hours) + 'h' : bucket;
+  return '<span class="aging-badge ' + cls + '">' + display + '</span>';
+}
+
+function escHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ---- Init ----
+async function init() {
+  // Load agents
+  const agentData = await api('/api/agent/list');
+  if (agentData) agents = agentData.agents || [];
+
+  // Populate agent filter
+  const af = $('agentFilter');
+  agents.forEach(a => {
+    const o = document.createElement('option');
+    o.value = a; o.textContent = a;
+    af.appendChild(o);
+  });
+
+  // Load dates
+  const dates = await api('/api/dates');
+  const agentDates = await api('/api/agent/dates');
+  const allDates = [...new Set([...(dates||[]), ...(agentDates||[])])].sort().reverse();
+
+  const ds = $('dateSelect');
+  if (allDates.length === 0) {
+    const o = document.createElement('option');
+    o.value = ''; o.textContent = 'No dates available';
+    ds.appendChild(o);
+    return;
+  }
+  allDates.forEach(d => {
+    const o = document.createElement('option');
+    o.value = d; o.textContent = d;
+    ds.appendChild(o);
+  });
+
+  currentDate = allDates[0];
+  loadDate();
+}
+
+async function loadDate() {
+  currentDate = $('dateSelect').value;
+  if (!currentDate) return;
+  $('statusText').innerHTML = '<span class="spinner"></span> Loading...';
+
+  // Load attendance
+  const att = await api('/api/agent/attendance?date=' + currentDate);
+  attendance = att || {};
+  renderAttendance();
+
+  // Load active tickets (own + temp-redistributed)
+  const rows = await api('/api/agent/active-tickets?date=' + currentDate);
+  assignments = rows || [];
+
+  // Load summary
+  agentSummary = await api('/api/agent/summary?date=' + currentDate) || {};
+
+  renderSummary();
+  renderTable();
+  $('statusText').textContent = 'Loaded ' + currentDate;
+}
+
+// ---- Attendance ----
+function renderAttendance() {
+  const container = $('agentChips');
+  container.innerHTML = '';
+  let presentCount = 0;
+
+  agents.forEach(a => {
+    const chip = document.createElement('div');
+    chip.className = 'agent-chip' + (attendance[a] !== false ? ' present' : '');
+    chip.textContent = a;
+    chip.onclick = () => {
+      attendance[a] = !attendance[a];
+      chip.classList.toggle('present');
+      updatePresentCount();
+    };
+    container.appendChild(chip);
+    if (attendance[a] !== false) presentCount++;
+  });
+
+  $('totalCount').textContent = agents.length;
+  $('presentCount').textContent = presentCount;
+}
+
+function updatePresentCount() {
+  const present = agents.filter(a => attendance[a] !== false).length;
+  $('presentCount').textContent = present;
+}
+
+function selectAllAgents() {
+  agents.forEach(a => attendance[a] = true);
+  renderAttendance();
+}
+function deselectAllAgents() {
+  agents.forEach(a => attendance[a] = false);
+  renderAttendance();
+}
+
+async function saveAttendance() {
+  const present = agents.filter(a => attendance[a] !== false);
+  const result = await api('/api/agent/save-attendance', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ date: currentDate, present })
+  });
+  if (result) toast('Attendance saved (' + present.length + ' present)', 'success');
+}
+
+// ---- Assignment ----
+async function doAssign() {
+  const present = agents.filter(a => attendance[a] !== false);
+  if (present.length === 0) { toast('Mark at least one agent as present', 'error'); return; }
+
+  $('assignBtn').disabled = true;
+  $('assignBtn').innerHTML = '<span class="spinner"></span> Assigning...';
+
+  // Save attendance first
+  await api('/api/agent/save-attendance', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ date: currentDate, present })
+  });
+
+  const result = await api('/api/agent/assign', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ date: currentDate, present })
+  });
+
+  $('assignBtn').disabled = false;
+  $('assignBtn').textContent = 'Assign Tickets';
+
+  if (result && result.status === 'assigned') {
+    let msg = result.total + ' new tickets assigned to ' + result.agents + ' agents';
+    if (result.redistributed > 0) msg += ' + ' + result.redistributed + ' pending tickets redistributed from absent agents';
+    toast(msg, 'success');
+    loadDate();
+  } else if (result && result.status === 'already_assigned') {
+    toast('Already assigned (' + result.count + ' tickets). Use Reassign to redistribute.', 'error');
+  } else {
+    toast(result?.message || 'Assignment failed', 'error');
+  }
+}
+
+async function doReassign() {
+  const present = agents.filter(a => attendance[a] !== false);
+  if (present.length === 0) { toast('Mark at least one agent as present', 'error'); return; }
+  if (!confirm('This will:\\n1. Reclaim pending tickets for returning agents\\n2. Re-distribute today\\'s tickets among present agents\\n3. Temp-redistribute absent agents\\' pending tickets\\n\\nContinue?')) return;
+
+  $('reassignBtn').disabled = true;
+  const result = await api('/api/agent/reassign', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ date: currentDate, present })
+  });
+  $('reassignBtn').disabled = false;
+
+  if (result && result.status === 'assigned') {
+    let msg = result.total + ' tickets reassigned to ' + result.agents + ' agents';
+    if (result.reclaimed > 0) msg += ' | ' + result.reclaimed + ' tickets reclaimed by returning agents';
+    if (result.redistributed > 0) msg += ' | ' + result.redistributed + ' redistributed from absent';
+    toast(msg, 'success');
+    loadDate();
+  } else {
+    toast(result?.message || 'Reassignment failed', 'error');
+  }
+}
+
+// ---- Summary ----
+function renderSummary() {
+  const grid = $('summaryGrid');
+  grid.innerHTML = '';
+
+  const total = assignments.length;
+  const totalOwn = assignments.filter(t => t.ticket_type !== 'temp').length;
+  const totalTemp = assignments.filter(t => t.ticket_type === 'temp').length;
+
+  // Total card
+  const totalCard = document.createElement('div');
+  totalCard.className = 'agent-card total-card';
+  totalCard.innerHTML = '<div class="name">All Agents</div><div class="count">' + total + '</div><div class="label">Total Active Tickets</div>' +
+    '<div class="card-sub-stats"><span class="stat stat-own">' + totalOwn + ' own</span><span class="stat stat-temp">' + totalTemp + ' temp</span></div>';
+  totalCard.onclick = () => { $('agentFilter').value = ''; filterTable(); highlightCard(''); };
+  grid.appendChild(totalCard);
+
+  // Per-agent cards
+  agents.forEach(a => {
+    const s = agentSummary[a] || {};
+    const own = s.own_today || 0;
+    const temp = s.temp_holding || 0;
+    const totalAgent = own + temp;
+    const completed = s.completed_all || 0;
+    if (totalAgent === 0 && completed === 0 && !Object.keys(agentSummary).length) return;
+    const card = document.createElement('div');
+    card.className = 'agent-card';
+    card.id = 'card-' + a;
+    const isAbsent = attendance[a] === false;
+    card.innerHTML = '<div class="name">' + escHtml(a) + (isAbsent ? ' <span style="color:var(--red);font-size:10px">(absent)</span>' : '') + '</div>' +
+      '<div class="count">' + totalAgent + '</div><div class="label">active tickets</div>' +
+      '<div class="card-sub-stats">' +
+        '<span class="stat stat-own">' + own + ' own</span>' +
+        (temp > 0 ? '<span class="stat stat-temp">' + temp + ' temp</span>' : '') +
+        (completed > 0 ? '<span class="stat stat-done">' + completed + ' done</span>' : '') +
+      '</div>';
+    card.onclick = () => { $('agentFilter').value = a; filterTable(); highlightCard(a); };
+    grid.appendChild(card);
+  });
+}
+
+function highlightCard(agent) {
+  document.querySelectorAll('.agent-card').forEach(c => c.classList.remove('active'));
+  if (agent) {
+    const card = document.getElementById('card-' + agent);
+    if (card) card.classList.add('active');
+  } else {
+    document.querySelector('.agent-card.total-card')?.classList.add('active');
+  }
+}
+
+// ---- Table ----
+function renderTable() {
+  const tbody = $('ticketBody');
+  tbody.innerHTML = '';
+
+  if (assignments.length === 0) {
+    $('tableWrap').style.display = 'none';
+    $('emptyState').style.display = 'block';
+    return;
+  }
+
+  $('tableWrap').style.display = 'block';
+  $('emptyState').style.display = 'none';
+  $('ticketCount').textContent = assignments.length;
+
+  // Group by agent
+  const grouped = {};
+  assignments.forEach(t => {
+    if (!grouped[t.agent_name]) grouped[t.agent_name] = [];
+    grouped[t.agent_name].push(t);
+  });
+
+  let idx = 0;
+  const sortedAgents = Object.keys(grouped).sort();
+  sortedAgents.forEach(agent => {
+    // Agent separator row
+    const sepTr = document.createElement('tr');
+    sepTr.className = 'agent-separator';
+    sepTr.dataset.agent = agent;
+    sepTr.innerHTML = '<td colspan="22">' + escHtml(agent) + ' (' + grouped[agent].length + ' tickets)</td>';
+    tbody.appendChild(sepTr);
+
+    grouped[agent].forEach(t => {
+      idx++;
+      const tr = document.createElement('tr');
+      tr.dataset.agent = t.agent_name;
+      tr.dataset.ticket = t.ticket_no;
+      if (t.ticket_type === 'temp' || t.is_temp) tr.className = 'temp-row';
+
+      const createdDisplay = t.created_date ? (t.created_date + (t.created_time ? ' ' + t.created_time : '')) : '';
+      const isTemp = t.ticket_type === 'temp' || t.is_temp;
+      const typeBadge = isTemp
+        ? '<span class="temp-badge">TEMP</span><br><span style="font-size:9px;color:var(--text3)">from ' + escHtml(t.original_agent) + '</span>'
+        : '<span class="own-badge">OWN</span>';
+      const ws = t.work_status || 'pending';
+
+      tr.innerHTML =
+        '<td style="color:var(--text3)">' + idx + '</td>' +
+        '<td style="font-weight:600;white-space:nowrap">' + escHtml(t.ticket_no) + (isTemp ? '<br><span style="font-size:9px;color:var(--text3)">' + escHtml(t.report_date) + '</span>' : '') + '</td>' +
+        '<td style="text-align:center">' + typeBadge + '</td>' +
+        '<td>' + workStatusSelect(t) + '</td>' +
+        '<td style="white-space:nowrap;font-size:11px">' + escHtml(createdDisplay) + '</td>' +
+        '<td>' + escHtml(t.phone) + '</td>' +
+        '<td style="max-width:180px;font-size:11px">' + escHtml(t.disposition_l4 || t.disposition_l3) + '</td>' +
+        '<td style="max-width:150px">' + escHtml(t.customer_name) + '</td>' +
+        '<td style="max-width:150px;font-size:11px">' + escHtml(t.mapped_partner) + '</td>' +
+        '<td style="font-size:11px">' + escHtml(t.current_queue) + '</td>' +
+        '<td style="text-align:center">' + (t.reopen_count || 0) + '</td>' +
+        '<td style="font-size:11px">' + escHtml(t.status) + '</td>' +
+        '<td>' + agingBadge(t.pending_hours, t.aging_bucket) + '</td>' +
+        editableCell(t, 'ground_team_update', 'text') +
+        '<td style="font-size:11px;white-space:nowrap">' + escHtml(t.assigned_at ? t.assigned_at.split(' ')[0] : '') + '</td>' +
+        '<td style="font-weight:600;color:var(--accent)">' + escHtml(t.agent_name) + '</td>' +
+        editableCell(t, 'ping_status', 'select', ['', 'Pinged', 'No Response', 'Responded']) +
+        editableCell(t, 'cx_action', 'text') +
+        editableCell(t, 'px_call_status', 'select', ['', 'Called', 'DNP', 'Busy', 'Switched Off', 'Not Reachable', 'Call Back']) +
+        editableCell(t, 'update_date', 'text') +
+        editableCell(t, 'agent_remark', 'text') +
+        editableCell(t, 'partner_concern', 'text');
+
+      tbody.appendChild(tr);
+    });
+  });
+}
+
+function workStatusSelect(ticket) {
+  const ws = ticket.work_status || 'pending';
+  const rd = ticket.report_date;
+  const tid = ticket.ticket_no;
+  const opts = ['pending', 'in_progress', 'completed'];
+  const labels = {'pending':'Pending', 'in_progress':'In Progress', 'completed':'Completed'};
+  const colors = {'pending':'var(--orange)', 'in_progress':'var(--blue)', 'completed':'var(--green)'};
+  const optHtml = opts.map(o =>
+    '<option value="' + o + '"' + (o === ws ? ' selected' : '') + ' style="color:' + colors[o] + '">' + labels[o] + '</option>'
+  ).join('');
+  return '<select class="ws-select" style="color:' + colors[ws] + '" onchange="saveWorkStatus(\'' + escHtml(rd) + '\',\'' + escHtml(tid) + '\',this.value,this)">' + optHtml + '</select>';
+}
+
+async function saveWorkStatus(reportDate, ticketNo, status, selectEl) {
+  const colors = {'pending':'var(--orange)', 'in_progress':'var(--blue)', 'completed':'var(--green)'};
+  selectEl.style.color = colors[status] || '';
+  await api('/api/agent/update-ticket', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ date: reportDate, ticket_no: ticketNo, updates: { work_status: status } })
+  });
+  // Update local state
+  const t = assignments.find(a => a.ticket_no === ticketNo && a.report_date === reportDate);
+  if (t) t.work_status = status;
+  toast('Status: ' + status, 'success');
+}
+
+function editableCell(ticket, field, type, options) {
+  const val = ticket[field] || '';
+  const tid = ticket.ticket_no;
+  const cellId = 'cell-' + field + '-' + tid;
+
+  if (type === 'select') {
+    const optHtml = (options || []).map(o =>
+      '<option value="' + escHtml(o) + '"' + (o === val ? ' selected' : '') + '>' + (o || '—') + '</option>'
+    ).join('');
+    return '<td class="editable" id="' + cellId + '">' +
+      '<select class="cell-select" onchange="saveCell(\'' + escHtml(tid) + '\',\'' + field + '\',this.value)">' +
+      optHtml + '</select></td>';
+  }
+
+  return '<td class="editable" id="' + cellId + '" onclick="startEdit(this,\'' + escHtml(tid) + '\',\'' + field + '\')">' +
+    '<div class="cell-val">' + escHtml(val) + '</div></td>';
+}
+
+function startEdit(td, ticketNo, field) {
+  if (td.querySelector('textarea')) return; // already editing
+  const current = td.querySelector('.cell-val')?.textContent || '';
+  td.innerHTML = '<textarea>' + escHtml(current) + '</textarea>';
+  const ta = td.querySelector('textarea');
+  ta.focus();
+  ta.selectionStart = ta.value.length;
+
+  ta.onblur = () => {
+    const newVal = ta.value.trim();
+    saveCell(ticketNo, field, newVal);
+    td.innerHTML = '<div class="cell-val">' + escHtml(newVal) + '</div>';
+    td.onclick = () => startEdit(td, ticketNo, field);
+  };
+
+  ta.onkeydown = (e) => {
+    if (e.key === 'Escape') { ta.blur(); }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ta.blur(); }
+  };
+}
+
+async function saveCell(ticketNo, field, value) {
+  const updates = {};
+  updates[field] = value;
+  await api('/api/agent/update-ticket', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ date: currentDate, ticket_no: ticketNo, updates })
+  });
+  // Update local state
+  const t = assignments.find(a => a.ticket_no === ticketNo);
+  if (t) t[field] = value;
+  toast('Saved', 'success');
+}
+
+function filterTable() {
+  const agent = $('agentFilter').value;
+  const rows = $('ticketBody').querySelectorAll('tr');
+  let visibleCount = 0;
+  rows.forEach(tr => {
+    if (!agent) {
+      tr.style.display = '';
+      if (!tr.classList.contains('agent-separator')) visibleCount++;
+    } else {
+      if (tr.dataset.agent === agent) {
+        tr.style.display = '';
+        if (!tr.classList.contains('agent-separator')) visibleCount++;
+      } else {
+        tr.style.display = 'none';
+      }
+    }
+  });
+  $('ticketCount').textContent = agent ? visibleCount : assignments.length;
+  highlightCard(agent);
+}
+
+function downloadCSV() {
+  const agent = $('agentFilter').value;
+  let url = '/api/agent/download?date=' + currentDate;
+  if (agent) url += '&agent=' + encodeURIComponent(agent);
+  window.open(url);
+}
+
+// ---- Boot ----
+init();
+</script>
 </body>
 </html>"""
 

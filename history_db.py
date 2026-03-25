@@ -180,11 +180,27 @@ def init_db():
             px_call_status TEXT DEFAULT '',
             update_date TEXT DEFAULT '',
             agent_remark TEXT DEFAULT '',
+            partner_concern TEXT DEFAULT '',
+            original_agent TEXT DEFAULT '',
+            is_temp INTEGER DEFAULT 0,
+            work_status TEXT DEFAULT 'pending',
             UNIQUE(report_date, ticket_no)
         )
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_assign_date ON agent_assignments(report_date)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_assign_agent ON agent_assignments(report_date, agent_name)")
+
+    # Migrations: add columns if missing (safe for existing DBs)
+    for col_sql in [
+        "ALTER TABLE agent_assignments ADD COLUMN partner_concern TEXT DEFAULT ''",
+        "ALTER TABLE agent_assignments ADD COLUMN original_agent TEXT DEFAULT ''",
+        "ALTER TABLE agent_assignments ADD COLUMN is_temp INTEGER DEFAULT 0",
+        "ALTER TABLE agent_assignments ADD COLUMN work_status TEXT DEFAULT 'pending'",
+    ]:
+        try:
+            c.execute(col_sql)
+        except Exception:
+            pass
 
     # New tickets cache - stores the filtered CSV at processing time
     # Available for download until 11:59 PM that day, then auto-deleted
@@ -1315,16 +1331,16 @@ def get_attendance(report_date_str):
 
 def assign_tickets_round_robin(report_date_str, present_agents=None):
     """
-    Assign new Internet Issues tickets for the given date to present agents
-    using round-robin allocation. Only assigns tickets that are NOT already
-    in the master sheet (i.e., the 'new' tickets from the morning snapshot).
+    Assign tickets for the given date using round-robin:
+    1. Today's new tickets → round-robin to present agents
+    2. Absent agents' PENDING tickets from previous days → temp-redistribute to present agents
     """
     init_db()
     conn = get_connection()
     c = conn.cursor()
 
-    # Check if already assigned for this date
-    c.execute("SELECT COUNT(*) FROM agent_assignments WHERE report_date = ?", (report_date_str,))
+    # Check if today's new tickets are already assigned
+    c.execute("SELECT COUNT(*) FROM agent_assignments WHERE report_date = ? AND is_temp = 0", (report_date_str,))
     existing = c.fetchone()[0]
     if existing > 0:
         conn.close()
@@ -1338,14 +1354,15 @@ def assign_tickets_round_robin(report_date_str, present_agents=None):
         conn.close()
         return {"status": "error", "message": "No agents marked as present"}
 
-    # Get new ticket IDs from master snapshot
+    absent_agents = [a for a in AGENT_LIST if a not in present_agents]
+
+    # ---- Part 1: Assign today's new tickets (only Ticket Pending) ----
     c.execute("SELECT master_new_ids FROM daily_summary WHERE report_date = ?", (report_date_str,))
     row = c.fetchone()
     new_ids = set()
     if row and row["master_new_ids"]:
         new_ids = set(x.strip() for x in row["master_new_ids"].split(",") if x.strip())
 
-    # Get the ticket details
     if new_ids:
         placeholders = ",".join("?" * len(new_ids))
         c.execute(f"""
@@ -1354,64 +1371,88 @@ def assign_tickets_round_robin(report_date_str, present_agents=None):
             ORDER BY pending_hours DESC
         """, [report_date_str] + list(new_ids))
     else:
-        # Fallback: use all tickets for the date
         c.execute("SELECT * FROM ticket_history WHERE report_date = ? ORDER BY pending_hours DESC",
                   (report_date_str,))
     tickets = [dict(r) for r in c.fetchall()]
 
-    if not tickets:
-        conn.close()
-        return {"status": "error", "message": "No tickets found for this date"}
-
-    # Round-robin assignment
-    assignments = []
+    new_assigned = 0
     now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
-    for i, ticket in enumerate(tickets):
-        agent = present_agents[i % len(present_agents)]
-        assignments.append((
-            report_date_str,
-            ticket["ticket_no"],
-            agent,
-            now_str,
-            ticket.get("created_date", ""),
-            ticket.get("created_time", ""),
-            ticket.get("pending_hours"),
-            ticket.get("aging_bucket", ""),
-            ticket.get("customer_name", ""),
-            ticket.get("mapped_partner", ""),
-            ticket.get("current_queue", ""),
-            ticket.get("status", ""),
-            ticket.get("sub_status", ""),
-            ticket.get("disposition_l3", ""),
-            "",  # disposition_l4
-            "",  # phone
-            ticket.get("city", ""),
-            ticket.get("zone", ""),
-            ticket.get("device_id", ""),
-            ticket.get("channel_partner", ""),
-        ))
 
-    c.executemany("""
-        INSERT OR REPLACE INTO agent_assignments
-        (report_date, ticket_no, agent_name, assigned_at,
-         created_date, created_time, pending_hours, aging_bucket,
-         customer_name, mapped_partner, current_queue, status, sub_status,
-         disposition_l3, disposition_l4, phone, city, zone, device_id, channel_partner)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, assignments)
+    if tickets:
+        assignments = []
+        for i, ticket in enumerate(tickets):
+            agent = present_agents[i % len(present_agents)]
+            assignments.append((
+                report_date_str, ticket["ticket_no"], agent, now_str,
+                ticket.get("created_date", ""), ticket.get("created_time", ""),
+                ticket.get("pending_hours"), ticket.get("aging_bucket", ""),
+                ticket.get("customer_name", ""), ticket.get("mapped_partner", ""),
+                ticket.get("current_queue", ""), ticket.get("status", ""),
+                ticket.get("sub_status", ""), ticket.get("disposition_l3", ""),
+                "", "",  # disposition_l4, phone
+                ticket.get("city", ""), ticket.get("zone", ""),
+                ticket.get("device_id", ""), ticket.get("channel_partner", ""),
+                agent,  # original_agent = same as agent (it's their own ticket)
+                0,      # is_temp = 0
+                "pending",  # work_status
+            ))
+
+        c.executemany("""
+            INSERT OR REPLACE INTO agent_assignments
+            (report_date, ticket_no, agent_name, assigned_at,
+             created_date, created_time, pending_hours, aging_bucket,
+             customer_name, mapped_partner, current_queue, status, sub_status,
+             disposition_l3, disposition_l4, phone, city, zone, device_id, channel_partner,
+             original_agent, is_temp, work_status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, assignments)
+        new_assigned = len(assignments)
+
+    # ---- Part 2: Redistribute absent agents' PENDING tickets ----
+    # Only tickets with Kapture status != 'Ticket Closed' and work_status = 'pending'
+    redistributed = 0
+    if absent_agents:
+        abs_placeholders = ",".join("?" * len(absent_agents))
+        c.execute(f"""
+            SELECT * FROM agent_assignments
+            WHERE original_agent IN ({abs_placeholders})
+              AND work_status = 'pending'
+              AND is_temp = 0
+              AND report_date != ?
+              AND COALESCE(status, '') != 'Ticket Closed'
+            ORDER BY pending_hours DESC
+        """, absent_agents + [report_date_str])
+        pending_tickets = [dict(r) for r in c.fetchall()]
+
+        if pending_tickets:
+            for i, ticket in enumerate(pending_tickets):
+                temp_agent = present_agents[i % len(present_agents)]
+                c.execute("""
+                    UPDATE agent_assignments
+                    SET agent_name = ?, is_temp = 1, assigned_at = ?
+                    WHERE report_date = ? AND ticket_no = ?
+                """, (temp_agent, now_str, ticket["report_date"], ticket["ticket_no"]))
+            redistributed = len(pending_tickets)
+
     conn.commit()
     conn.close()
 
-    # Count per agent
-    agent_counts = {}
-    for _, _, agent, *_ in assignments:
-        agent_counts[agent] = agent_counts.get(agent, 0) + 1
+    # Count per agent across both new + redistributed
+    result_counts = {}
+    for a in present_agents:
+        result_counts[a] = 0
+    if tickets:
+        for i, _ in enumerate(tickets):
+            agent = present_agents[i % len(present_agents)]
+            result_counts[agent] = result_counts.get(agent, 0) + 1
 
     return {
         "status": "assigned",
-        "total": len(assignments),
+        "total": new_assigned,
+        "redistributed": redistributed,
+        "absent_agents": absent_agents,
         "agents": len(present_agents),
-        "per_agent": agent_counts,
+        "per_agent": result_counts,
     }
 
 
@@ -1434,25 +1475,100 @@ def get_agent_assignments(report_date_str, agent_name=None):
     return rows
 
 
-def get_agent_summary(report_date_str):
-    """Get assignment count per agent for a date."""
+def get_agent_active_tickets(report_date_str, agent_name=None):
+    """
+    Get ALL tickets an agent is currently responsible for:
+    - Own tickets from today (report_date, is_temp=0)
+    - Temp-redistributed tickets from past dates (is_temp=1, agent_name=current holder)
+    """
     init_db()
     conn = get_connection()
     c = conn.cursor()
+
+    if agent_name:
+        # Today's own tickets for this agent
+        c.execute("""SELECT *, 'own' as ticket_type FROM agent_assignments
+                     WHERE report_date = ? AND agent_name = ? AND is_temp = 0
+                     ORDER BY pending_hours DESC""",
+                  (report_date_str, agent_name))
+        own = [dict(r) for r in c.fetchall()]
+
+        # Temp tickets currently held by this agent (from any date)
+        c.execute("""SELECT *, 'temp' as ticket_type FROM agent_assignments
+                     WHERE agent_name = ? AND is_temp = 1 AND work_status = 'pending'
+                     ORDER BY pending_hours DESC""",
+                  (agent_name,))
+        temp = [dict(r) for r in c.fetchall()]
+    else:
+        # All today's own tickets
+        c.execute("""SELECT *, 'own' as ticket_type FROM agent_assignments
+                     WHERE report_date = ? AND is_temp = 0
+                     ORDER BY agent_name, pending_hours DESC""",
+                  (report_date_str,))
+        own = [dict(r) for r in c.fetchall()]
+
+        # All temp tickets currently active
+        c.execute("""SELECT *, 'temp' as ticket_type FROM agent_assignments
+                     WHERE is_temp = 1 AND work_status = 'pending'
+                     ORDER BY agent_name, pending_hours DESC""",
+                  ())
+        temp = [dict(r) for r in c.fetchall()]
+
+    conn.close()
+    return own + temp
+
+
+def get_agent_summary(report_date_str):
+    """Get assignment count per agent for a date, including cross-date temp tickets."""
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+
+    # Today's own tickets (assigned on this date, not temp)
     c.execute("""SELECT agent_name, COUNT(*) as count
-                 FROM agent_assignments WHERE report_date = ?
+                 FROM agent_assignments WHERE report_date = ? AND is_temp = 0
                  GROUP BY agent_name ORDER BY agent_name""",
               (report_date_str,))
-    rows = {row["agent_name"]: row["count"] for row in c.fetchall()}
+    own = {row["agent_name"]: row["count"] for row in c.fetchall()}
+
+    # Temp tickets currently held by each agent (from any date)
+    c.execute("""SELECT agent_name, COUNT(*) as count
+                 FROM agent_assignments WHERE is_temp = 1 AND work_status = 'pending'
+                 GROUP BY agent_name""")
+    temp = {row["agent_name"]: row["count"] for row in c.fetchall()}
+
+    # Pending count per agent (own, across all dates)
+    c.execute("""SELECT original_agent, COUNT(*) as count
+                 FROM agent_assignments WHERE work_status = 'pending' AND is_temp = 0
+                 GROUP BY original_agent""")
+    pending = {row["original_agent"]: row["count"] for row in c.fetchall()}
+
+    # Completed count per agent (own, across all dates)
+    c.execute("""SELECT original_agent, COUNT(*) as count
+                 FROM agent_assignments WHERE work_status = 'completed' AND is_temp = 0
+                 GROUP BY original_agent""")
+    completed = {row["original_agent"]: row["count"] for row in c.fetchall()}
+
     conn.close()
-    return rows
+
+    result = {}
+    for agent in AGENT_LIST:
+        result[agent] = {
+            "own_today": own.get(agent, 0),
+            "temp_holding": temp.get(agent, 0),
+            "total_today": own.get(agent, 0) + temp.get(agent, 0),
+            "pending_all": pending.get(agent, 0),
+            "completed_all": completed.get(agent, 0),
+        }
+    return result
 
 
 def update_agent_ticket(report_date_str, ticket_no, updates):
     """Update agent work fields for a specific ticket."""
     init_db()
     allowed = {"ground_team_update", "ping_status", "cx_action",
-               "px_call_status", "update_date", "agent_remark"}
+               "px_call_status", "update_date", "agent_remark", "partner_concern",
+               "work_status"}
     filtered = {k: v for k, v in updates.items() if k in allowed}
     if not filtered:
         return False
@@ -1467,14 +1583,121 @@ def update_agent_ticket(report_date_str, ticket_no, updates):
 
 
 def reassign_tickets(report_date_str, present_agents):
-    """Re-assign tickets for a date with new present agents (clears old assignments)."""
+    """
+    Re-assign tickets for a date with updated attendance:
+    1. Today's OWN tickets (is_temp=0, report_date=today) → re-distribute among present agents
+    2. Absent agents' pending tickets from past dates → temp-redistribute to present
+    3. Returning agents → reclaim their original pending tickets that were temp-assigned
+    """
     init_db()
     conn = get_connection()
     c = conn.cursor()
-    c.execute("DELETE FROM agent_assignments WHERE report_date = ?", (report_date_str,))
+    now_str = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+
+    absent_agents = [a for a in AGENT_LIST if a not in present_agents]
+    reclaimed = 0
+    redistributed = 0
+
+    # ---- Step 1: Reclaim tickets for RETURNING agents ----
+    # If an agent is now present, their original pending tickets (not closed)
+    # that were temp-assigned to someone else go back to them
+    for agent in present_agents:
+        c.execute("""
+            UPDATE agent_assignments
+            SET agent_name = original_agent, is_temp = 0, assigned_at = ?
+            WHERE original_agent = ? AND is_temp = 1 AND work_status = 'pending'
+              AND COALESCE(status, '') != 'Ticket Closed'
+        """, (now_str, agent))
+        reclaimed += c.rowcount
+
+    # ---- Step 2: Re-distribute today's own tickets among present agents ----
+    # Delete today's assignments and re-do round-robin
+    c.execute("DELETE FROM agent_assignments WHERE report_date = ? AND is_temp = 0", (report_date_str,))
+    conn.commit()
+
+    # Get ticket data again
+    c.execute("SELECT master_new_ids FROM daily_summary WHERE report_date = ?", (report_date_str,))
+    row = c.fetchone()
+    new_ids = set()
+    if row and row["master_new_ids"]:
+        new_ids = set(x.strip() for x in row["master_new_ids"].split(",") if x.strip())
+
+    if new_ids:
+        placeholders = ",".join("?" * len(new_ids))
+        c.execute(f"""
+            SELECT * FROM ticket_history
+            WHERE report_date = ? AND ticket_no IN ({placeholders})
+            ORDER BY pending_hours DESC
+        """, [report_date_str] + list(new_ids))
+    else:
+        c.execute("SELECT * FROM ticket_history WHERE report_date = ? ORDER BY pending_hours DESC",
+                  (report_date_str,))
+    tickets = [dict(r) for r in c.fetchall()]
+
+    new_assigned = 0
+    if tickets:
+        assignments = []
+        for i, ticket in enumerate(tickets):
+            agent = present_agents[i % len(present_agents)]
+            assignments.append((
+                report_date_str, ticket["ticket_no"], agent, now_str,
+                ticket.get("created_date", ""), ticket.get("created_time", ""),
+                ticket.get("pending_hours"), ticket.get("aging_bucket", ""),
+                ticket.get("customer_name", ""), ticket.get("mapped_partner", ""),
+                ticket.get("current_queue", ""), ticket.get("status", ""),
+                ticket.get("sub_status", ""), ticket.get("disposition_l3", ""),
+                "", "",
+                ticket.get("city", ""), ticket.get("zone", ""),
+                ticket.get("device_id", ""), ticket.get("channel_partner", ""),
+                agent, 0, "pending",
+            ))
+
+        c.executemany("""
+            INSERT OR REPLACE INTO agent_assignments
+            (report_date, ticket_no, agent_name, assigned_at,
+             created_date, created_time, pending_hours, aging_bucket,
+             customer_name, mapped_partner, current_queue, status, sub_status,
+             disposition_l3, disposition_l4, phone, city, zone, device_id, channel_partner,
+             original_agent, is_temp, work_status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, assignments)
+        new_assigned = len(assignments)
+
+    # ---- Step 3: Redistribute absent agents' pending tickets (only non-closed) ----
+    if absent_agents:
+        abs_placeholders = ",".join("?" * len(absent_agents))
+        c.execute(f"""
+            SELECT * FROM agent_assignments
+            WHERE original_agent IN ({abs_placeholders})
+              AND work_status = 'pending'
+              AND is_temp = 0
+              AND report_date != ?
+              AND COALESCE(status, '') != 'Ticket Closed'
+            ORDER BY pending_hours DESC
+        """, absent_agents + [report_date_str])
+        pending_tickets = [dict(r) for r in c.fetchall()]
+
+        if pending_tickets:
+            for i, ticket in enumerate(pending_tickets):
+                temp_agent = present_agents[i % len(present_agents)]
+                c.execute("""
+                    UPDATE agent_assignments
+                    SET agent_name = ?, is_temp = 1, assigned_at = ?
+                    WHERE report_date = ? AND ticket_no = ?
+                """, (temp_agent, now_str, ticket["report_date"], ticket["ticket_no"]))
+            redistributed = len(pending_tickets)
+
     conn.commit()
     conn.close()
-    return assign_tickets_round_robin(report_date_str, present_agents)
+
+    return {
+        "status": "assigned",
+        "total": new_assigned,
+        "redistributed": redistributed,
+        "reclaimed": reclaimed,
+        "absent_agents": absent_agents,
+        "agents": len(present_agents),
+    }
 
 
 if __name__ == "__main__":
