@@ -552,7 +552,7 @@ def api_agent_update():
 
 # ========== AI CHAT ENDPOINT ==========
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyD0PLnvL60iFD2ReXR3dCHSZ8IveLs9ovY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 def get_db_context():
     """Build a context string from the database for AI to use."""

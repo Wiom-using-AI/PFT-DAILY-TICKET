@@ -545,7 +545,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/ai-chat":
             question = data.get("question", "")
             history = data.get("history", [])
-            GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyD0PLnvL60iFD2ReXR3dCHSZ8IveLs9ovY")
+            GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 
             # Build context
             from history_db import get_all_summaries, get_category_aging_pivot
