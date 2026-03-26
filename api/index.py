@@ -34,6 +34,7 @@ from history_db import (
     get_category_l4_daily_trend,
     get_tickets_for_download,
     get_aging_daily_trend,
+    get_category_trend_chart,
     init_db,
     AGENT_LIST,
     get_agent_dates,
@@ -427,6 +428,18 @@ def api_aging_daily_trend():
     l4 = request.args.get("l4")
     if date_from and date_to:
         return jsonify(get_aging_daily_trend(date_from, date_to, l3_list=l3, l4_list=l4))
+    return jsonify({"error": "from and to required"}), 400
+
+
+@app.route("/api/category-trend-chart")
+def api_category_trend_chart():
+    date_from = request.args.get("from")
+    date_to = request.args.get("to")
+    buckets = request.args.get("buckets")
+    l3 = request.args.get("l3")
+    l4 = request.args.get("l4")
+    if date_from and date_to:
+        return jsonify(get_category_trend_chart(date_from, date_to, bucket_filter=buckets, l3_filter=l3, l4_filter=l4))
     return jsonify({"error": "from and to required"}), 400
 
 
