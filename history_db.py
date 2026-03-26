@@ -1206,11 +1206,10 @@ def get_category_l4_daily_trend(date_from, date_to, l3_category):
 
 def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=None, l4_filter=None, expand_l4=False):
     """Return ticket counts grouped by L3 (or L4 if expand_l4=True and single L3) per date.
-    bucket_filter: list of aging bucket labels to include (filter, not grouping)
-    l3_filter: list of L3 categories to show
-    l4_filter: list of L4 sub-categories to show
-    expand_l4: if True and single L3 selected, drill into L4 sub-categories
+    Uses category_breakdown from daily_summary for dates without raw data (older than 7 days),
+    and full_report_history for dates with raw data (supports bucket/L4 filters).
     """
+    import json
     conn = get_connection()
     c = conn.cursor()
 
@@ -1221,76 +1220,119 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
 
     # Determine grouping: only expand to L4 if explicitly requested
     group_by_l4 = (expand_l4 and len(l3_vals) == 1) or (len(l4_vals) > 0)
+    has_advanced_filters = len(bucket_vals) > 0 or group_by_l4
 
-    group_col = "COALESCE(disposition_l4, '(No L4)')" if group_by_l4 else "disposition_l3"
-
-    query = f"""
-        SELECT report_date, {group_col} as category, COUNT(*) as cnt
-        FROM full_report_history
-        WHERE report_date >= ? AND report_date <= ?
-          AND disposition_l3 IS NOT NULL AND disposition_l3 != ''
-    """
-    params = [date_from, date_to]
-
-    if bucket_vals:
-        placeholders = ",".join("?" * len(bucket_vals))
-        query += f" AND aging_bucket IN ({placeholders})"
-        params.extend(bucket_vals)
-
-    if l3_vals:
-        placeholders = ",".join("?" * len(l3_vals))
-        query += f" AND disposition_l3 IN ({placeholders})"
-        params.extend(l3_vals)
-
-    if l4_vals:
-        placeholders = ",".join("?" * len(l4_vals))
-        query += f" AND disposition_l4 IN ({placeholders})"
-        params.extend(l4_vals)
-
-    query += " GROUP BY report_date, category ORDER BY report_date ASC"
-    c.execute(query, params)
-    raw = c.fetchall()
-
-    # Get dates
+    # Find which dates have raw data
     c.execute("""
         SELECT DISTINCT report_date FROM full_report_history
         WHERE report_date >= ? AND report_date <= ?
         ORDER BY report_date ASC
     """, (date_from, date_to))
-    dates = [r["report_date"] for r in c.fetchall()]
+    raw_dates = set(r["report_date"] for r in c.fetchall())
 
-    # Build categories dict: { "Category Name": { "2026-03-20": 50, ... }, ... }
+    # Get all dates from daily_summary (infinite retention)
+    c.execute("""
+        SELECT report_date, category_breakdown FROM daily_summary
+        WHERE report_date >= ? AND report_date <= ?
+        ORDER BY report_date ASC
+    """, (date_from, date_to))
+    summary_rows = c.fetchall()
+
     categories = {}
-    for r in raw:
-        cat = r["category"] if r["category"] else "(Unknown)"
-        if cat not in categories:
-            categories[cat] = {}
-        categories[cat][r["report_date"]] = r["cnt"]
+    dates = []
+
+    for row in summary_rows:
+        rd = row["report_date"]
+        dates.append(rd)
+
+        if rd in raw_dates and (has_advanced_filters or group_by_l4):
+            # Use raw data for this date (supports bucket/L4 filters)
+            continue  # Will be filled below
+        else:
+            # Use category_breakdown from daily_summary (L3 level only)
+            breakdown = json.loads(row["category_breakdown"]) if row["category_breakdown"] else {}
+            for cat, cnt in breakdown.items():
+                if l3_vals and cat not in l3_vals:
+                    continue
+                if cat not in categories:
+                    categories[cat] = {}
+                categories[cat][rd] = cnt
+
+    # For dates with raw data and advanced filters, query full_report_history
+    dates_needing_raw = [d for d in dates if d in raw_dates and (has_advanced_filters or group_by_l4)]
+    if dates_needing_raw:
+        group_col = "COALESCE(disposition_l4, '(No L4)')" if group_by_l4 else "disposition_l3"
+        placeholders_dates = ",".join("?" * len(dates_needing_raw))
+        query = f"""
+            SELECT report_date, {group_col} as category, COUNT(*) as cnt
+            FROM full_report_history
+            WHERE report_date IN ({placeholders_dates})
+              AND disposition_l3 IS NOT NULL AND disposition_l3 != ''
+        """
+        params = list(dates_needing_raw)
+
+        if bucket_vals:
+            ph = ",".join("?" * len(bucket_vals))
+            query += f" AND aging_bucket IN ({ph})"
+            params.extend(bucket_vals)
+        if l3_vals:
+            ph = ",".join("?" * len(l3_vals))
+            query += f" AND disposition_l3 IN ({ph})"
+            params.extend(l3_vals)
+        if l4_vals:
+            ph = ",".join("?" * len(l4_vals))
+            query += f" AND disposition_l4 IN ({ph})"
+            params.extend(l4_vals)
+
+        query += " GROUP BY report_date, category ORDER BY report_date ASC"
+        c.execute(query, params)
+
+        for r in c.fetchall():
+            cat = r["category"] if r["category"] else "(Unknown)"
+            if cat not in categories:
+                categories[cat] = {}
+            categories[cat][r["report_date"]] = r["cnt"]
+
+    # Also fill raw dates that don't need advanced filters but weren't in summary
+    # (edge case: date in raw but not in summary)
+    for rd in raw_dates:
+        if rd not in dates:
+            dates.append(rd)
+
+    dates.sort()
 
     # Sort categories by total count (descending)
     sorted_cats = sorted(categories.keys(), key=lambda k: sum(categories[k].values()), reverse=True)
     categories_sorted = {k: categories[k] for k in sorted_cats}
 
-    # Get available L3/L4 for filter dropdowns
+    # Get available L3 from both sources
+    all_l3 = set()
+    for row in summary_rows:
+        breakdown = json.loads(row["category_breakdown"]) if row["category_breakdown"] else {}
+        all_l3.update(breakdown.keys())
+    # Also from raw data
     c.execute("""
         SELECT DISTINCT disposition_l3 FROM full_report_history
         WHERE report_date >= ? AND report_date <= ? AND disposition_l3 IS NOT NULL AND disposition_l3 != ''
-        ORDER BY disposition_l3
     """, (date_from, date_to))
-    available_l3 = [r["disposition_l3"] for r in c.fetchall()]
+    all_l3.update(r["disposition_l3"] for r in c.fetchall())
+    available_l3 = sorted(all_l3)
 
-    l4_query = """
-        SELECT DISTINCT disposition_l4 FROM full_report_history
-        WHERE report_date >= ? AND report_date <= ? AND disposition_l4 IS NOT NULL AND disposition_l4 != ''
-    """
-    l4_params = [date_from, date_to]
-    if l3_vals:
-        placeholders = ",".join("?" * len(l3_vals))
-        l4_query += f" AND disposition_l3 IN ({placeholders})"
-        l4_params.extend(l3_vals)
-    l4_query += " ORDER BY disposition_l4"
-    c.execute(l4_query, l4_params)
-    available_l4 = [r["disposition_l4"] for r in c.fetchall()]
+    # Available L4 (only from raw data since summary doesn't store L4)
+    available_l4 = []
+    if raw_dates:
+        l4_query = """
+            SELECT DISTINCT disposition_l4 FROM full_report_history
+            WHERE report_date >= ? AND report_date <= ? AND disposition_l4 IS NOT NULL AND disposition_l4 != ''
+        """
+        l4_params = [date_from, date_to]
+        if l3_vals:
+            ph = ",".join("?" * len(l3_vals))
+            l4_query += f" AND disposition_l3 IN ({ph})"
+            l4_params.extend(l3_vals)
+        l4_query += " ORDER BY disposition_l4"
+        c.execute(l4_query, l4_params)
+        available_l4 = [r["disposition_l4"] for r in c.fetchall()]
 
     conn.close()
     return {
@@ -1299,6 +1341,7 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
         "group_by": "l4" if group_by_l4 else "l3",
         "available_l3": available_l3,
         "available_l4": available_l4,
+        "raw_data_dates": sorted(raw_dates),  # Tell frontend which dates have raw data
     }
 
 
