@@ -1038,12 +1038,12 @@ def generate_dashboard_html():
       <div id="agingChartTypeContainer" style="position:relative;display:inline-block">
         <button onclick="document.getElementById('agingChartDropdown').classList.toggle('show')"
           style="padding:5px 12px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:6px">
-          &#128202; <span id="agingChartLabel">Column</span> &#9660;</button>
+          &#128202; <span id="agingChartLabel">Line</span> &#9660;</button>
         <div id="agingChartDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.12);z-index:100;min-width:180px;overflow:hidden">
-          <div class="chart-dd-item active" data-ctype="bar" onclick="pickAgingChart('bar','Column',this)">&#9642; Column</div>
+          <div class="chart-dd-item" data-ctype="bar" onclick="pickAgingChart('bar','Column',this)">&#9642; Column</div>
           <div class="chart-dd-item" data-ctype="stackedBar" onclick="pickAgingChart('stackedBar','Stacked Column',this)">&#9642; Stacked Column</div>
           <div class="chart-dd-item" data-ctype="percent" onclick="pickAgingChart('percent','100% Stacked',this)">&#9642; 100% Stacked</div>
-          <div class="chart-dd-item" data-ctype="line" onclick="pickAgingChart('line','Line',this)">&#9642; Line</div>
+          <div class="chart-dd-item active" data-ctype="line" onclick="pickAgingChart('line','Line',this)">&#9642; Line</div>
           <div class="chart-dd-item" data-ctype="area" onclick="pickAgingChart('area','Area',this)">&#9642; Area</div>
           <div class="chart-dd-item" data-ctype="stackedArea" onclick="pickAgingChart('stackedArea','Stacked Area',this)">&#9642; Stacked Area</div>
           <div class="chart-dd-item" data-ctype="combo" onclick="pickAgingChart('combo','Line + Column',this)">&#9642; Line + Column</div>
@@ -2572,11 +2572,11 @@ function applyAgingTrendFilter() {{
 
 // ========== AGING TREND CHART (Independent Section) ==========
 let _agingChart = null;
-let _agingChartType = 'bar';
+let _agingChartType = 'line';
 window._chartDates = [];
 window._chartCategories = {{}};
 window._chartGroupBy = 'l3';
-window._chartSelectedL3 = [];
+window._chartSelectedL3 = ['Internet Issues'];
 window._chartSelectedL4 = [];
 window._chartSelectedBuckets = BUCKET_LABELS.slice();
 window._chartExpandL4 = false; // false = show L3, true = drill into L4
