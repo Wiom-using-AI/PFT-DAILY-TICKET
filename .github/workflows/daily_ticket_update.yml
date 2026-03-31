@@ -89,10 +89,10 @@ jobs:
           git diff --cached --quiet || git commit -m "Auto-update: Daily ticket data $TODAY"
           git push origin main
 
-      - name: Wait for Vercel deployment
+      - name: Wait for Railway deployment
         if: steps.check.outputs.skip != 'true'
         run: |
-          echo "Waiting 90 seconds for Vercel to deploy..."
+          echo "Waiting 90 seconds for Railway to deploy..."
           sleep 90
 
       - name: Install Playwright

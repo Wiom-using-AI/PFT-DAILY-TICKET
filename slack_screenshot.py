@@ -9,7 +9,7 @@ import requests
 from datetime import datetime
 
 # --- Config ---
-DASHBOARD_URL = "https://pft-daily-ticket.vercel.app"
+DASHBOARD_URL = "https://pft-daily-ticket-production.up.railway.app"
 SCREENSHOT_PATH = "ticket_bifurcation.png"
 
 SELECTED_CATEGORIES = [
