@@ -1244,12 +1244,17 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
 
     for row in summary_rows:
         rd = row["report_date"]
-        dates.append(rd)
 
         if rd in raw_dates and (has_advanced_filters or group_by_l4):
-            # Use raw data for this date (supports bucket/L4 filters)
+            # Use raw data for this date (supports bucket/L4/queue filters)
+            dates.append(rd)
             continue  # Will be filled below
+        elif len(queue_vals) > 0 and rd not in raw_dates:
+            # Queue filter active but no raw data for this date — skip it
+            # because summary data doesn't have queue-level breakdown
+            continue
         else:
+            dates.append(rd)
             # Use category_breakdown from daily_summary (L3 level only)
             breakdown = json.loads(row["category_breakdown"]) if row["category_breakdown"] else {}
             for cat, cnt in breakdown.items():
@@ -1355,6 +1360,9 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
         c.execute(q_query, q_params)
         available_queues = [r["current_queue"] for r in c.fetchall()]
 
+    # Flag: when queue filter is active, only raw-data dates are shown
+    queue_filter_limited = len(queue_vals) > 0 and any(d not in raw_dates for d in [r["report_date"] for r in summary_rows])
+
     conn.close()
     return {
         "dates": dates,
@@ -1364,6 +1372,7 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
         "available_l4": available_l4,
         "available_queues": available_queues,
         "raw_data_dates": sorted(raw_dates),
+        "queue_filter_limited": queue_filter_limited,
     }
 
 
