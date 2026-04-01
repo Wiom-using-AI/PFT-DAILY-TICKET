@@ -576,17 +576,21 @@ def cleanup_expired_cache():
 
 def cleanup_old_data():
     """
-    Remove old data to keep the database small. Runs after each daily save.
-    - Ticket-level data (full_report_history, ticket_history, agent_assignments): 7 days
+    Remove old data to keep the database manageable. Runs after each daily save.
+    - full_report_history: 31 days (dashboard chart needs all filters across full range)
+    - ticket_history: 7 days (download CSV only needs recent data)
+    - agent_assignments: 7 days (operational)
     - Daily summary numbers (daily_summary): kept forever (infinite)
     """
     conn = get_connection()
     c = conn.cursor()
+    cutoff_31 = (datetime.now(IST) - timedelta(days=31)).strftime("%Y-%m-%d")
     cutoff_7 = (datetime.now(IST) - timedelta(days=7)).strftime("%Y-%m-%d")
 
-    # Ticket-level data: keep 7 days only
-    c.execute("DELETE FROM full_report_history WHERE report_date < ?", (cutoff_7,))
+    # Full report history: keep 31 days for dashboard chart filters (queue, L4, bucket)
+    c.execute("DELETE FROM full_report_history WHERE report_date < ?", (cutoff_31,))
     del_full = c.rowcount
+    # Ticket-level download data: keep 7 days only
     c.execute("DELETE FROM ticket_history WHERE report_date < ?", (cutoff_7,))
     del_tickets = c.rowcount
     c.execute("DELETE FROM agent_assignments WHERE report_date < ?", (cutoff_7,))
@@ -601,10 +605,10 @@ def cleanup_old_data():
     if total_deleted > 0 or del_cache > 0:
         conn.commit()
         conn.execute("VACUUM")
-        print(f"[Cleanup] Removed {del_full + del_tickets} ticket rows, {del_assign} assignments older than 7 days, {del_cache} expired cache entries")
+        print(f"[Cleanup] Removed {del_full} full_report rows (>31d), {del_tickets} ticket rows + {del_assign} assignments (>7d), {del_cache} expired cache entries")
     else:
         conn.commit()
-        print(f"[Cleanup] No old data to remove (cutoff: {cutoff_7})")
+        print(f"[Cleanup] No old data to remove (full_report cutoff: {cutoff_31}, ticket cutoff: {cutoff_7})")
     conn.close()
 
 
@@ -1244,17 +1248,16 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
 
     for row in summary_rows:
         rd = row["report_date"]
+        dates.append(rd)
 
         if rd in raw_dates and (has_advanced_filters or group_by_l4):
             # Use raw data for this date (supports bucket/L4/queue filters)
-            dates.append(rd)
             continue  # Will be filled below
         elif len(queue_vals) > 0 and rd not in raw_dates:
-            # Queue filter active but no raw data for this date — skip it
-            # because summary data doesn't have queue-level breakdown
+            # Queue filter active but no raw data — skip (can't filter by queue in summary)
+            # Show 0 for this date so the chart still includes it but reflects no match
             continue
         else:
-            dates.append(rd)
             # Use category_breakdown from daily_summary (L3 level only)
             breakdown = json.loads(row["category_breakdown"]) if row["category_breakdown"] else {}
             for cat, cnt in breakdown.items():
