@@ -2748,11 +2748,7 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
     const subtitle = document.getElementById('chartSubtitle');
     if (subtitle) {{
       const isL4 = window._chartGroupBy === 'l4';
-      let subHtml = `<span style="font-size:11px;color:#6b7280">Each line/bar = <strong>${{isL4 ? 'L4 Sub-categories' : 'L3 Categories'}}</strong></span>`;
-      if (data.queue_filter_limited) {{
-        subHtml += ` <span style="font-size:10px;color:#f59e0b;margin-left:8px">⚠ Queue filter only applies to dates with raw data (last ~31 days). Older dates show as 0.</span>`;
-      }}
-      subtitle.innerHTML = subHtml;
+      subtitle.innerHTML = `<span style="font-size:11px;color:#6b7280">Each line/bar = <strong>${{isL4 ? 'L4 Sub-categories' : 'L3 Categories'}}</strong></span>`;
     }}
 
     // Badges

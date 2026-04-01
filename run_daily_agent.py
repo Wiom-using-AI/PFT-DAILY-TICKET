@@ -222,20 +222,29 @@ def main():
 
         # Step 5: Save category breakdown + full report data for pivot table
         try:
-            from history_db import save_category_breakdown, save_full_report
+            from history_db import save_category_breakdown, save_full_report, save_queue_category_breakdown
             import openpyxl as _opx
+            from collections import defaultdict as _dd
             log("Extracting category breakdown from full report...")
             _wb = _opx.load_workbook(report_path, read_only=True)
             _ws = _wb.active
             _headers = [cell.value for cell in next(_ws.iter_rows(min_row=1, max_row=1))]
             _l3_idx = _headers.index("Disposition Folder Level 3")
+            _queue_idx = _headers.index("Current Queue Name")
             _cats = {}
+            _queue_bd = _dd(lambda: _dd(int))
             for _row in _ws.iter_rows(min_row=2, values_only=True):
                 _val = str(_row[_l3_idx] or "Unknown").strip()
                 _cats[_val] = _cats.get(_val, 0) + 1
+                _qval = str(_row[_queue_idx] or "(Unknown)").strip()
+                _queue_bd[_val][_qval] += 1
             _wb.close()
             save_category_breakdown(report_date, _cats)
             log(f"Category breakdown: {_cats}")
+            # Save L3 x Queue breakdown for chart queue filter
+            _queue_bd_dict = {l3: dict(queues) for l3, queues in _queue_bd.items()}
+            save_queue_category_breakdown(report_date, _queue_bd_dict)
+            log(f"Queue breakdown: {len(_queue_bd_dict)} L3 categories with queue splits")
 
             # Save ALL tickets from full report for category × aging pivot
             log("Saving full report tickets for pivot table...")

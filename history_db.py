@@ -61,10 +61,12 @@ def init_db():
         ("master_total", 0), ("master_already", 0), ("master_new", 0),
         ("master_new_ids", "''"), ("master_snapshot_time", "NULL"),
         ("category_breakdown", "''"),
+        ("queue_category_breakdown", "''"),
     ]:
         try:
+            text_cols = ("master_new_ids", "master_snapshot_time", "category_breakdown", "queue_category_breakdown")
             c.execute(f"ALTER TABLE daily_summary ADD COLUMN {col} INTEGER DEFAULT {default}"
-                      if col != "master_new_ids" and col != "master_snapshot_time"
+                      if col not in text_cols
                       else f"ALTER TABLE daily_summary ADD COLUMN {col} TEXT DEFAULT {default}")
         except Exception:
             pass  # Column already exists
@@ -429,6 +431,22 @@ def save_category_breakdown(report_date_str, category_counts):
     conn.commit()
     conn.close()
     print(f"[Categories] Saved {len(category_counts)} categories for {report_date_str}")
+
+
+def save_queue_category_breakdown(report_date_str, queue_breakdown):
+    """
+    Save the L3 x Queue breakdown from the full pending report.
+    queue_breakdown = {"Internet Issues": {"CX - High Pain": 38, "Partner": 1526, ...}, ...}
+    """
+    import json
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("UPDATE daily_summary SET queue_category_breakdown = ? WHERE report_date = ?",
+              (json.dumps(queue_breakdown), report_date_str))
+    conn.commit()
+    conn.close()
+    print(f"[QueueBreakdown] Saved {len(queue_breakdown)} L3 categories with queue splits for {report_date_str}")
 
 
 def get_category_breakdown(report_date_str):
@@ -1237,7 +1255,7 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
 
     # Get all dates from daily_summary (infinite retention)
     c.execute("""
-        SELECT report_date, category_breakdown FROM daily_summary
+        SELECT report_date, category_breakdown, queue_category_breakdown FROM daily_summary
         WHERE report_date >= ? AND report_date <= ?
         ORDER BY report_date ASC
     """, (date_from, date_to))
@@ -1254,9 +1272,17 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
             # Use raw data for this date (supports bucket/L4/queue filters)
             continue  # Will be filled below
         elif len(queue_vals) > 0 and rd not in raw_dates:
-            # Queue filter active but no raw data — skip (can't filter by queue in summary)
-            # Show 0 for this date so the chart still includes it but reflects no match
-            continue
+            # Queue filter active but no raw data — use queue_category_breakdown from summary
+            qbd = json.loads(row["queue_category_breakdown"]) if row["queue_category_breakdown"] else {}
+            for cat, queue_counts in qbd.items():
+                if l3_vals and cat not in l3_vals:
+                    continue
+                # Sum counts for selected queues only
+                total = sum(queue_counts.get(q, 0) for q in queue_vals)
+                if total > 0:
+                    if cat not in categories:
+                        categories[cat] = {}
+                    categories[cat][rd] = total
         else:
             # Use category_breakdown from daily_summary (L3 level only)
             breakdown = json.loads(row["category_breakdown"]) if row["category_breakdown"] else {}
@@ -1347,8 +1373,8 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
         c.execute(l4_query, l4_params)
         available_l4 = [r["disposition_l4"] for r in c.fetchall()]
 
-    # Available queues (only from raw data)
-    available_queues = []
+    # Available queues (from raw data + queue_category_breakdown in summaries)
+    all_queues = set()
     if raw_dates:
         q_query = """
             SELECT DISTINCT current_queue FROM full_report_history
@@ -1361,10 +1387,15 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
             q_params.extend(l3_vals)
         q_query += " ORDER BY current_queue"
         c.execute(q_query, q_params)
-        available_queues = [r["current_queue"] for r in c.fetchall()]
-
-    # Flag: when queue filter is active, only raw-data dates are shown
-    queue_filter_limited = len(queue_vals) > 0 and any(d not in raw_dates for d in [r["report_date"] for r in summary_rows])
+        all_queues.update(r["current_queue"] for r in c.fetchall())
+    # Also gather queue names from summary queue_category_breakdown
+    for row in summary_rows:
+        qbd = json.loads(row["queue_category_breakdown"]) if row["queue_category_breakdown"] else {}
+        for cat, queue_counts in qbd.items():
+            if l3_vals and cat not in l3_vals:
+                continue
+            all_queues.update(queue_counts.keys())
+    available_queues = sorted(all_queues)
 
     conn.close()
     return {
@@ -1375,7 +1406,6 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
         "available_l4": available_l4,
         "available_queues": available_queues,
         "raw_data_dates": sorted(raw_dates),
-        "queue_filter_limited": queue_filter_limited,
     }
 
 
