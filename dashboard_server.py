@@ -423,8 +423,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             l3 = params.get("l3", [None])[0]
             l4 = params.get("l4", [None])[0]
             expand_l4 = params.get("expand_l4", ["0"])[0] == "1"
+            queue = params.get("queue", [None])[0]
             if date_from and date_to:
-                self.send_json(get_category_trend_chart(date_from, date_to, bucket_filter=buckets, l3_filter=l3, l4_filter=l4, expand_l4=expand_l4))
+                self.send_json(get_category_trend_chart(date_from, date_to, bucket_filter=buckets, l3_filter=l3, l4_filter=l4, expand_l4=expand_l4, queue_filter=queue))
             else:
                 self.send_json({"error": "from and to required"}, 400)
         elif path == "/api/category-l4-trend":
@@ -1030,6 +1031,7 @@ def generate_dashboard_html():
       <div id="chartBucketFilterContainer" style="margin-right:4px"></div>
       <div id="chartL3Container" style="margin-right:4px"></div>
       <div id="chartL4Container" style="margin-right:4px"></div>
+      <div id="chartQueueContainer" style="margin-right:4px"></div>
       <label style="font-size:11px;color:var(--text2);font-weight:600">FROM</label>
       <input type="date" id="chartFrom" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:inherit">
       <label style="font-size:11px;color:var(--text2);font-weight:600">TO</label>
@@ -2580,6 +2582,7 @@ window._chartSelectedL3 = ['Internet Issues'];
 window._chartSelectedL4 = [];
 window._chartSelectedBuckets = BUCKET_LABELS.slice();
 window._chartExpandL4 = false; // false = show L3, true = drill into L4
+window._chartSelectedQueues = [];
 
 // 20 distinct colors for category lines
 const CHART_COLORS = [
@@ -2599,10 +2602,10 @@ function pickAgingChart(type, label, item) {{
 
 // Close dropdowns on outside click
 document.addEventListener('click', function(e) {{
-  ['agingChartDropdown','chartBucketDD','chartL3DD'].forEach(id => {{
+  ['agingChartDropdown','chartBucketDD','chartL3DD','chartQueueDD'].forEach(id => {{
     const dd = document.getElementById(id);
     if (!dd) return;
-    const containers = ['agingChartTypeContainer','chartBucketFilterContainer','chartL3Container','chartL4Container'];
+    const containers = ['agingChartTypeContainer','chartBucketFilterContainer','chartL3Container','chartL4Container','chartQueueContainer'];
     const inside = containers.some(cid => {{ const c = document.getElementById(cid); return c && c.contains(e.target); }});
     if (!inside) dd.classList.remove('show');
   }});
@@ -2629,10 +2632,13 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
   const buckets = window._chartSelectedBuckets;
   const expandL4 = window._chartExpandL4 && l3.length === 1;
 
+  const queues = window._chartSelectedQueues;
+
   let url = `/api/category-trend-chart?from=${{fromDate}}&to=${{toDate}}`;
   if (buckets.length && buckets.length < BUCKET_LABELS.length) url += `&buckets=${{encodeURIComponent(buckets.join(','))}}`;
   if (l3.length) url += `&l3=${{encodeURIComponent(l3.join(','))}}`;
   if (l4.length) url += `&l4=${{encodeURIComponent(l4.join(','))}}`;
+  if (queues.length) url += `&queue=${{encodeURIComponent(queues.join(','))}}`;
   if (expandL4) url += `&expand_l4=1`;
   // If expand L4 but multiple L3s, force L3 view
   if (l3.length !== 1) window._chartExpandL4 = false;
@@ -2709,6 +2715,35 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
       }}
     }}
 
+    // Build Queue filter dropdown
+    const queueOptions = data.available_queues || [];
+    const qc = document.getElementById('chartQueueContainer');
+    if (qc) {{
+      if (!queueOptions.length) {{
+        qc.innerHTML = `<button disabled style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:#f5f5f5;font-size:11px;color:#aaa;cursor:not-allowed" title="Queue filter available for last 7 days only">Queue &#9660;</button>`;
+      }} else {{
+        let qItems = '';
+        queueOptions.forEach(v => {{
+          qItems += `<label style="display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer;font-size:11px;white-space:nowrap">
+            <input type="checkbox" ${{queues.includes(v)?'checked':''}} data-chartqueue="${{v}}" style="cursor:pointer"> ${{v}}</label>`;
+        }});
+        const qCnt = queues.length;
+        qc.innerHTML = `<div style="position:relative;display:inline-block">
+          <button onclick="document.getElementById('chartQueueDD').classList.toggle('show')"
+            style="padding:4px 10px;border:1px solid ${{qCnt?'#0891b2':'var(--border)'}};border-radius:6px;background:${{qCnt?'#ecfeff':'#fff'}};cursor:pointer;font-size:11px;font-family:inherit;display:flex;align-items:center;gap:4px;color:${{qCnt?'#0e7490':'inherit'}}">
+            ${{qCnt ? 'Queue ('+qCnt+')' : 'All Queues'}} &#9660;</button>
+          <div id="chartQueueDD" style="display:none;position:absolute;left:0;top:100%;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100;min-width:250px;max-height:300px;overflow-y:auto">
+            <div style="display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
+              <button onclick="document.querySelectorAll('#chartQueueDD input[data-chartqueue]').forEach(c=>c.checked=true);chartApplyQueue()"
+                style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#f0fdf4;cursor:pointer;font-size:10px">All</button>
+              <button onclick="document.querySelectorAll('#chartQueueDD input[data-chartqueue]').forEach(c=>c.checked=false);chartApplyQueue()"
+                style="flex:1;padding:3px;border:1px solid var(--border);border-radius:4px;background:#fef2f2;cursor:pointer;font-size:10px">None</button>
+              <button onclick="chartApplyQueue();document.getElementById('chartQueueDD').classList.remove('show')"
+                style="flex:1;padding:3px;border:1px solid #0891b2;border-radius:4px;background:#ecfeff;cursor:pointer;font-size:10px;color:#0e7490;font-weight:600">Apply</button>
+            </div>${{qItems}}</div></div>`;
+      }}
+    }}
+
     // Subtitle showing what each line represents
     const subtitle = document.getElementById('chartSubtitle');
     if (subtitle) {{
@@ -2721,7 +2756,8 @@ async function loadAgingChart(overrideFrom, overrideTo) {{
     l3.forEach(v => {{ badges += `<span style="background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">${{v}}</span> `; }});
     l4.forEach(v => {{ badges += `<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">${{v}}</span> `; }});
     if (buckets.length < BUCKET_LABELS.length) badges += `<span style="background:#fef2f2;color:#dc2626;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">Aging: ${{buckets.length}}/${{BUCKET_LABELS.length}}</span> `;
-    if (l3.length || l4.length || buckets.length < BUCKET_LABELS.length) badges += `<button onclick="chartClearFilters()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:11px;font-weight:600">&#10005; Clear All</button>`;
+    queues.forEach(v => {{ badges += `<span style="background:#f0fdfa;color:#0f766e;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600">${{v}}</span> `; }});
+    if (l3.length || l4.length || buckets.length < BUCKET_LABELS.length || queues.length) badges += `<button onclick="chartClearFilters()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:11px;font-weight:600">&#10005; Clear All</button>`;
     document.getElementById('chartBadges').innerHTML = badges;
 
     renderAgingChart();
@@ -2753,10 +2789,17 @@ window.chartToggleL4 = function() {{
   if (from && to) loadAgingChart(from, to);
 }};
 
+window.chartApplyQueue = function() {{
+  window._chartSelectedQueues = Array.from(document.querySelectorAll('#chartQueueDD input[data-chartqueue]:checked')).map(c => c.getAttribute('data-chartqueue'));
+  const from = document.getElementById('chartFrom').value, to = document.getElementById('chartTo').value;
+  if (from && to) loadAgingChart(from, to);
+}};
+
 window.chartClearFilters = function() {{
   window._chartSelectedL3 = [];
   window._chartSelectedL4 = [];
   window._chartSelectedBuckets = BUCKET_LABELS.slice();
+  window._chartSelectedQueues = [];
   window._chartExpandL4 = false;
   const from = document.getElementById('chartFrom').value, to = document.getElementById('chartTo').value;
   if (from && to) loadAgingChart(from, to);

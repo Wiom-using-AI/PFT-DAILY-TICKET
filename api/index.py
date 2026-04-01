@@ -439,8 +439,9 @@ def api_category_trend_chart():
     l3 = request.args.get("l3")
     l4 = request.args.get("l4")
     expand_l4 = request.args.get("expand_l4", "0") == "1"
+    queue = request.args.get("queue")
     if date_from and date_to:
-        return jsonify(get_category_trend_chart(date_from, date_to, bucket_filter=buckets, l3_filter=l3, l4_filter=l4, expand_l4=expand_l4))
+        return jsonify(get_category_trend_chart(date_from, date_to, bucket_filter=buckets, l3_filter=l3, l4_filter=l4, expand_l4=expand_l4, queue_filter=queue))
     return jsonify({"error": "from and to required"}), 400
 
 

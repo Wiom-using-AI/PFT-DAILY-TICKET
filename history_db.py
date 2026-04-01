@@ -1204,10 +1204,10 @@ def get_category_l4_daily_trend(date_from, date_to, l3_category):
     }
 
 
-def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=None, l4_filter=None, expand_l4=False):
+def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=None, l4_filter=None, expand_l4=False, queue_filter=None):
     """Return ticket counts grouped by L3 (or L4 if expand_l4=True and single L3) per date.
     Uses category_breakdown from daily_summary for dates without raw data (older than 7 days),
-    and full_report_history for dates with raw data (supports bucket/L4 filters).
+    and full_report_history for dates with raw data (supports bucket/L4/queue filters).
     """
     import json
     conn = get_connection()
@@ -1217,10 +1217,11 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
     bucket_vals = [x.strip() for x in bucket_filter.split(",") if x.strip()] if bucket_filter else []
     l3_vals = [x.strip() for x in l3_filter.split(",") if x.strip()] if l3_filter else []
     l4_vals = [x.strip() for x in l4_filter.split(",") if x.strip()] if l4_filter else []
+    queue_vals = [x.strip() for x in queue_filter.split(",") if x.strip()] if queue_filter else []
 
     # Determine grouping: only expand to L4 if explicitly requested
     group_by_l4 = (expand_l4 and len(l3_vals) == 1) or (len(l4_vals) > 0)
-    has_advanced_filters = len(bucket_vals) > 0 or group_by_l4
+    has_advanced_filters = len(bucket_vals) > 0 or group_by_l4 or len(queue_vals) > 0
 
     # Find which dates have raw data
     c.execute("""
@@ -1283,6 +1284,10 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
             ph = ",".join("?" * len(l4_vals))
             query += f" AND disposition_l4 IN ({ph})"
             params.extend(l4_vals)
+        if queue_vals:
+            ph = ",".join("?" * len(queue_vals))
+            query += f" AND current_queue IN ({ph})"
+            params.extend(queue_vals)
 
         query += " GROUP BY report_date, category ORDER BY report_date ASC"
         c.execute(query, params)
@@ -1334,6 +1339,22 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
         c.execute(l4_query, l4_params)
         available_l4 = [r["disposition_l4"] for r in c.fetchall()]
 
+    # Available queues (only from raw data)
+    available_queues = []
+    if raw_dates:
+        q_query = """
+            SELECT DISTINCT current_queue FROM full_report_history
+            WHERE report_date >= ? AND report_date <= ? AND current_queue IS NOT NULL AND current_queue != ''
+        """
+        q_params = [date_from, date_to]
+        if l3_vals:
+            ph = ",".join("?" * len(l3_vals))
+            q_query += f" AND disposition_l3 IN ({ph})"
+            q_params.extend(l3_vals)
+        q_query += " ORDER BY current_queue"
+        c.execute(q_query, q_params)
+        available_queues = [r["current_queue"] for r in c.fetchall()]
+
     conn.close()
     return {
         "dates": dates,
@@ -1341,7 +1362,8 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
         "group_by": "l4" if group_by_l4 else "l3",
         "available_l3": available_l3,
         "available_l4": available_l4,
-        "raw_data_dates": sorted(raw_dates),  # Tell frontend which dates have raw data
+        "available_queues": available_queues,
+        "raw_data_dates": sorted(raw_dates),
     }
 
 
