@@ -1,11 +1,9 @@
 name: Daily PFT Ticket Update
 
-# Primary: 10:15 AM IST, Backup: 10:30 AM IST (in case GitHub delays the first)
-# "Already updated" check prevents duplicate runs
+# Single daily run at 10:15 AM IST. "Already updated" check prevents duplicate Slack posts.
 on:
   schedule:
-    - cron: '45 4 * * *'   # Primary: 10:15 AM IST
-    - cron: '0 5 * * *'    # Backup: 10:30 AM IST
+    - cron: '45 4 * * *'   # 10:15 AM IST
   workflow_dispatch:  # Allow manual trigger from GitHub UI
 
 permissions:
@@ -27,10 +25,10 @@ jobs:
         run: |
           TODAY=$(TZ=Asia/Kolkata date +%Y-%m-%d)
           echo "today=$TODAY" >> $GITHUB_OUTPUT
-          LAST_MSG=$(git log -1 --pretty=%s 2>/dev/null || echo "")
-          if echo "$LAST_MSG" | grep -q "Auto-update: Daily ticket data $TODAY"; then
+          # Search ALL commits (not just last) for today's auto-update or local daily update
+          if git log --since="$TODAY 00:00:00" --pretty=%s | grep -qE "(Auto-update: Daily ticket data $TODAY|Daily update:.*$(TZ=Asia/Kolkata date +%m/%d/%Y))"; then
             echo "skip=true" >> $GITHUB_OUTPUT
-            echo "Already updated for $TODAY, skipping."
+            echo "Already updated for $TODAY, skipping (Slack already posted)."
           else
             echo "skip=false" >> $GITHUB_OUTPUT
             echo "No update for $TODAY yet, proceeding."
