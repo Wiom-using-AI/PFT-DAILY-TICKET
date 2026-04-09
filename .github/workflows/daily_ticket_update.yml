@@ -82,14 +82,29 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git reset --soft origin/main
-          git add ticket_history.db
-          git add internet_issues_tickets_*.xlsx 2>/dev/null || true
-          git add pending_report_*.xlsx 2>/dev/null || true
           TODAY=$(TZ=Asia/Kolkata date +%Y-%m-%d)
-          git diff --cached --quiet || git commit -m "Auto-update: Daily ticket data $TODAY"
-          git push origin main
+          # Retry up to 5 times in case of concurrent pushes
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt $attempt..."
+            git fetch origin main
+            git reset --soft origin/main
+            git add ticket_history.db
+            git add internet_issues_tickets_*.xlsx 2>/dev/null || true
+            git add pending_report_*.xlsx 2>/dev/null || true
+            if git diff --cached --quiet; then
+              echo "Nothing to commit, exiting."
+              exit 0
+            fi
+            git commit -m "Auto-update: Daily ticket data $TODAY"
+            if git push origin main; then
+              echo "Push succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "Push failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "Push failed after 5 attempts"
+          exit 1
 
       - name: Wait for Railway deployment
         if: steps.check.outputs.skip != 'true'
