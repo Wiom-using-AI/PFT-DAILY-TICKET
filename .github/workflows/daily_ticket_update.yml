@@ -1,13 +1,13 @@
 name: Daily PFT Ticket Update
 
-# Multiple cron triggers because GitHub Actions free-tier cron is unreliable
-# (often delayed 30min-2hr, sometimes skipped). Skip-check prevents duplicate Slack posts.
+# Email arrives ~8 AM IST. Multiple cron triggers for GitHub free-tier reliability.
+# Skip-check prevents duplicate Slack posts.
 on:
   schedule:
-    - cron: '45 4 * * *'   # 10:15 AM IST (primary)
-    - cron: '15 5 * * *'   # 10:45 AM IST (backup 1)
-    - cron: '45 5 * * *'   # 11:15 AM IST (backup 2)
-    - cron: '15 6 * * *'   # 11:45 AM IST (backup 3)
+    - cron: '45 2 * * *'   # 8:15 AM IST (primary)
+    - cron: '15 3 * * *'   # 8:45 AM IST (backup 1)
+    - cron: '45 3 * * *'   # 9:15 AM IST (backup 2)
+    - cron: '15 4 * * *'   # 9:45 AM IST (backup 3)
   workflow_dispatch:  # Allow manual trigger from GitHub UI
 
 permissions:
