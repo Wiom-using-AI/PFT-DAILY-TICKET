@@ -39,6 +39,8 @@ from history_db import (
     get_tickets_for_download,
     get_aging_daily_trend,
     get_category_trend_chart,
+    get_resolution_summary,
+    get_resolution_trend,
     init_db,
     AGENT_LIST,
     get_agent_dates,
@@ -436,6 +438,20 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(get_category_l4_daily_trend(date_from, date_to, l3))
             else:
                 self.send_json({"error": "from, to and l3 required"}, 400)
+        elif path == "/api/resolution":
+            date = params.get("date", [None])[0]
+            if not date:
+                dates = get_available_dates()
+                date = dates[0] if dates else None
+            data = get_resolution_summary(date) if date else None
+            self.send_json(data or {})
+        elif path == "/api/resolution-trend":
+            date_from = params.get("from", [None])[0]
+            date_to = params.get("to", [None])[0]
+            if date_from and date_to:
+                self.send_json(get_resolution_trend(date_from, date_to))
+            else:
+                self.send_json([])
         elif path == "/api/download-category-tickets":
             date = params.get("date", [None])[0]
             l3 = params.get("l3", [None])[0]
@@ -1075,6 +1091,26 @@ def generate_dashboard_html():
 <!-- Heatmap: Queue x Aging (hidden) -->
 <div class="section" id="heatmapSection" style="display:none"></div>
 
+<!-- Resolution Tracker -->
+<div class="dashboard-section" data-section-id="resolutionTracker" data-section-label="Resolution Tracker" draggable="true">
+<div class="section" id="resolutionSection" style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);border-left:3px solid #22c55e">
+  <div class="section-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+    <h3>&#9989; Resolution Tracker &mdash; Daily Closure Rate</h3>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span style="font-size:11px;color:#6b7280">FROM</span>
+      <input type="date" id="resFrom" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:12px">
+      <span style="font-size:11px;color:#6b7280">TO</span>
+      <input type="date" id="resTo" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:12px">
+      <button onclick="loadResolution()" style="padding:4px 14px;background:var(--green);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px">Apply</button>
+    </div>
+  </div>
+  <div id="resolutionCards" style="margin:16px 0"></div>
+  <div id="resolutionTable" style="margin:12px 0"></div>
+  <div style="height:280px;margin-top:12px"><canvas id="resolutionCanvas"></canvas></div>
+  <p style="font-size:11px;color:#6b7280;margin-top:8px">Compares morning pending tickets against afternoon (6 PM) and evening (9 PM) reports. Tickets missing in later reports = resolved/closed.</p>
+</div>
+</div>
+
 <!-- Daily Trend Chart (removed) -->
 <div class="dashboard-section" data-section-id="trendChart" data-section-label="Daily Trend Chart" draggable="true" style="display:none">
 <div class="section" id="trendSection"></div>
@@ -1180,6 +1216,7 @@ async function init() {{
   }}
   loadTrends();
   addFilterRow(); // Start with one filter row
+  loadResolution(); // Resolution Tracker
 }}
 
 function highlightBtn(el) {{
@@ -3656,6 +3693,205 @@ function initDragDrop() {{
   applySavedLayout();
   initDragDrop();
 }})();
+
+// ---- Resolution Tracker ----
+let _resChart = null;
+
+async function loadResolution(overrideFrom, overrideTo) {{
+  let fromDate = overrideFrom || document.getElementById('resFrom').value;
+  let toDate = overrideTo || document.getElementById('resTo').value;
+
+  if (!fromDate || !toDate) {{
+    // Default: last 14 days
+    const refDate = currentDate || (availableDates.length > 0 ? availableDates[0] : null);
+    if (!refDate) return;
+    toDate = refDate;
+    const to = new Date(refDate + 'T00:00:00');
+    to.setDate(to.getDate() - 13);
+    fromDate = localDateStr(to);
+  }}
+  document.getElementById('resFrom').value = fromDate;
+  document.getElementById('resTo').value = toDate;
+
+  try {{
+    const trend = await api(`/api/resolution-trend?from=${{fromDate}}&to=${{toDate}}`);
+
+    // Cards: show latest day's summary
+    const cardsEl = document.getElementById('resolutionCards');
+    const latest = trend.length > 0 ? trend[trend.length - 1] : null;
+
+    if (!latest || !latest.morning_count) {{
+      cardsEl.innerHTML = `<div style="text-align:center;padding:20px;color:#6b7280;font-size:13px">
+        No resolution data yet. Data will appear after the afternoon (6 PM) email is processed.</div>`;
+      document.getElementById('resolutionTable').innerHTML = '';
+      return;
+    }}
+
+    const mc = latest.morning_count || 0;
+    const ra = latest.resolved_by_afternoon || 0;
+    const re = latest.resolved_by_evening || 0;
+    const rra = latest.resolution_rate_afternoon != null ? latest.resolution_rate_afternoon.toFixed(1) + '%' : '—';
+    const rre = latest.resolution_rate_evening != null ? latest.resolution_rate_evening.toFixed(1) + '%' : '—';
+    const ac = latest.afternoon_count;
+    const ec = latest.evening_count;
+    const na = latest.new_afternoon || 0;
+    const ne = latest.new_evening || 0;
+    const stillPending = ec != null ? ec : (ac != null ? ac : mc);
+
+    cardsEl.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px">
+        <div style="background:#fff;border-radius:10px;padding:14px;text-align:center;border:1px solid #e2e8f0">
+          <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px">Morning Pending</div>
+          <div style="font-size:28px;font-weight:700;color:#1e293b;margin-top:4px">${{mc.toLocaleString()}}</div>
+          <div style="font-size:10px;color:#94a3b8">8 AM snapshot</div>
+        </div>
+        <div style="background:#fff;border-radius:10px;padding:14px;text-align:center;border:1px solid #bbf7d0">
+          <div style="font-size:11px;color:#16a34a;text-transform:uppercase;letter-spacing:0.5px">Resolved by 6 PM</div>
+          <div style="font-size:28px;font-weight:700;color:#16a34a;margin-top:4px">${{ra.toLocaleString()}}</div>
+          <div style="font-size:13px;font-weight:600;color:#15803d;background:#dcfce7;display:inline-block;padding:2px 8px;border-radius:12px;margin-top:2px">${{rra}}</div>
+        </div>
+        <div style="background:#fff;border-radius:10px;padding:14px;text-align:center;border:1px solid #86efac">
+          <div style="font-size:11px;color:#15803d;text-transform:uppercase;letter-spacing:0.5px">Resolved by 9 PM</div>
+          <div style="font-size:28px;font-weight:700;color:#15803d;margin-top:4px">${{re.toLocaleString()}}</div>
+          <div style="font-size:13px;font-weight:600;color:#166534;background:#bbf7d0;display:inline-block;padding:2px 8px;border-radius:12px;margin-top:2px">${{rre}}</div>
+        </div>
+        <div style="background:#fff;border-radius:10px;padding:14px;text-align:center;border:1px solid #fecaca">
+          <div style="font-size:11px;color:#dc2626;text-transform:uppercase;letter-spacing:0.5px">Still Pending (EOD)</div>
+          <div style="font-size:28px;font-weight:700;color:#dc2626;margin-top:4px">${{stillPending.toLocaleString()}}</div>
+          <div style="font-size:10px;color:#94a3b8">${{na + ne > 0 ? `+${{na + ne}} new tickets added during day` : ''}}</div>
+        </div>
+      </div>`;
+
+    // Category resolution table
+    const tableEl = document.getElementById('resolutionTable');
+    const catRes = latest.category_resolution;
+    if (catRes && typeof catRes === 'object' && Object.keys(catRes).length > 0) {{
+      const cats = Object.entries(catRes).sort((a,b) => b[1].morning - a[1].morning);
+      let rows = '';
+      cats.forEach(([cat, data]) => {{
+        if (cat === 'Router Pickup' || cat === '(Unknown)') return;
+        const morn = data.morning || 0;
+        const resA = data.resolved_afternoon || 0;
+        const resE = data.resolved_evening || 0;
+        const rateA = morn > 0 ? (resA/morn*100).toFixed(1) : '—';
+        const rateE = morn > 0 ? (resE/morn*100).toFixed(1) : '—';
+        rows += `<tr>
+          <td style="padding:8px 12px;font-weight:500">${{cat}}</td>
+          <td style="padding:8px 12px;text-align:center">${{morn.toLocaleString()}}</td>
+          <td style="padding:8px 12px;text-align:center;color:#16a34a;font-weight:600">${{resA}} <span style="font-size:10px;color:#6b7280">(${{rateA}}%)</span></td>
+          <td style="padding:8px 12px;text-align:center;color:#15803d;font-weight:600">${{resE}} <span style="font-size:10px;color:#6b7280">(${{rateE}}%)</span></td>
+        </tr>`;
+      }});
+      tableEl.innerHTML = `<div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+        <thead><tr style="background:#f0fdf4">
+          <th style="padding:8px 12px;text-align:left;border-bottom:1px solid var(--border)">Category (L3)</th>
+          <th style="padding:8px 12px;text-align:center;border-bottom:1px solid var(--border)">Morning Pending</th>
+          <th style="padding:8px 12px;text-align:center;border-bottom:1px solid var(--border)">Resolved by 6 PM</th>
+          <th style="padding:8px 12px;text-align:center;border-bottom:1px solid var(--border)">Resolved by 9 PM</th>
+        </tr></thead><tbody>${{rows}}</tbody></table></div>`;
+    }} else {{
+      tableEl.innerHTML = '';
+    }}
+
+    // Trend chart
+    if (trend.length > 1) {{
+      renderResolutionChart(trend);
+    }}
+  }} catch(e) {{
+    console.error('Resolution load error:', e);
+  }}
+}}
+
+function renderResolutionChart(trend) {{
+  const canvas = document.getElementById('resolutionCanvas');
+  if (!canvas) return;
+  if (_resChart) {{ _resChart.destroy(); _resChart = null; }}
+
+  const labels = trend.map(d => {{
+    const dt = new Date(d.report_date + 'T00:00:00');
+    return dt.toLocaleDateString('en-IN', {{day:'numeric',month:'short'}});
+  }});
+
+  const datasets = [
+    {{
+      label: 'Morning Pending',
+      data: trend.map(d => d.morning_count || 0),
+      borderColor: '#94a3b8',
+      backgroundColor: '#94a3b822',
+      borderWidth: 2,
+      pointRadius: 4,
+      tension: 0.3,
+      yAxisID: 'y',
+    }},
+    {{
+      label: 'Resolved by 6 PM',
+      data: trend.map(d => d.resolved_by_afternoon || 0),
+      borderColor: '#22c55e',
+      backgroundColor: '#22c55e55',
+      borderWidth: 3,
+      pointRadius: 5,
+      pointBackgroundColor: '#22c55e',
+      tension: 0.3,
+      yAxisID: 'y',
+    }},
+    {{
+      label: 'Resolved by 9 PM',
+      data: trend.map(d => d.resolved_by_evening || 0),
+      borderColor: '#15803d',
+      backgroundColor: '#15803d55',
+      borderWidth: 3,
+      pointRadius: 5,
+      pointBackgroundColor: '#15803d',
+      tension: 0.3,
+      yAxisID: 'y',
+    }},
+    {{
+      label: 'Resolution Rate (9 PM)',
+      data: trend.map(d => d.resolution_rate_evening != null ? d.resolution_rate_evening : null),
+      borderColor: '#f59e0b',
+      backgroundColor: '#f59e0b33',
+      borderWidth: 2,
+      borderDash: [5, 5],
+      pointRadius: 4,
+      pointBackgroundColor: '#f59e0b',
+      tension: 0.3,
+      yAxisID: 'y1',
+      fill: false,
+    }},
+  ];
+
+  _resChart = new Chart(canvas, {{
+    type: 'line',
+    data: {{ labels, datasets }},
+    options: {{
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {{ mode: 'index', intersect: false }},
+      plugins: {{
+        legend: {{ position: 'bottom', labels: {{ font: {{ size: 11 }}, usePointStyle: true }} }},
+        datalabels: {{ display: false }},
+      }},
+      scales: {{
+        y: {{
+          position: 'left',
+          title: {{ display: true, text: 'Ticket Count', font: {{ size: 11 }} }},
+          beginAtZero: true,
+        }},
+        y1: {{
+          position: 'right',
+          title: {{ display: true, text: 'Resolution Rate %', font: {{ size: 11 }} }},
+          min: 0,
+          max: 100,
+          grid: {{ drawOnChartArea: false }},
+        }},
+        x: {{
+          ticks: {{ font: {{ size: 10 }} }},
+        }},
+      }},
+    }},
+  }});
+}}
 
 init();
 </script>

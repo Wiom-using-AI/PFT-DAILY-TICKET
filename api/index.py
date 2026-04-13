@@ -455,6 +455,27 @@ def api_category_l4_trend():
     return jsonify({"error": "from, to and l3 required"}), 400
 
 
+@app.route("/api/resolution")
+def api_resolution():
+    from history_db import get_resolution_summary, get_available_dates
+    date = request.args.get("date")
+    if not date:
+        dates = get_available_dates()
+        date = dates[0] if dates else None
+    data = get_resolution_summary(date) if date else None
+    return jsonify(data or {})
+
+
+@app.route("/api/resolution-trend")
+def api_resolution_trend():
+    from history_db import get_resolution_trend
+    date_from = request.args.get("from")
+    date_to = request.args.get("to")
+    if date_from and date_to:
+        return jsonify(get_resolution_trend(date_from, date_to))
+    return jsonify([])
+
+
 @app.route("/api/download-category-tickets")
 def api_download_category_tickets():
     date = request.args.get("date")

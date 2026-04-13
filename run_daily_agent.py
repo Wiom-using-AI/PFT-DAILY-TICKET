@@ -266,6 +266,29 @@ def main():
         except Exception as e:
             log(f"Warning: Could not save categories/full report: {e}")
 
+        # Step 5c: Save morning resolution snapshot (ticket IDs for resolution tracking)
+        try:
+            from history_db import save_resolution_snapshot
+            log("Saving morning resolution snapshot...")
+            _wb2 = _opx.load_workbook(report_path, read_only=True)
+            _ws2 = _wb2.active
+            _h2 = [cell.value for cell in next(_ws2.iter_rows(min_row=1, max_row=1))]
+            _tid_idx = _h2.index("Ticket No")
+            _l3_idx2 = _h2.index("Disposition Folder Level 3")
+            _morning_ids = []
+            _morning_l3 = {}
+            for _r in _ws2.iter_rows(min_row=2, values_only=True):
+                _tid = str(_r[_tid_idx]).strip() if _r[_tid_idx] else None
+                if _tid:
+                    _morning_ids.append(_tid)
+                    if _r[_l3_idx2]:
+                        _morning_l3[_tid] = str(_r[_l3_idx2]).strip()
+            _wb2.close()
+            save_resolution_snapshot(report_date, "morning", _morning_ids, _morning_l3)
+            log(f"Morning resolution snapshot: {len(_morning_ids)} ticket IDs saved")
+        except Exception as e:
+            log(f"Warning: Could not save morning resolution snapshot: {e}")
+
         # Step 6: Snapshot master sheet comparison (FIXED at run time)
         try:
             import csv

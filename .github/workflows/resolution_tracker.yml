@@ -1,0 +1,118 @@
+name: Resolution Tracker (Afternoon + Evening)
+
+# Afternoon email ~6:15 PM IST, Evening email ~9:05 PM IST
+# Multiple crons for GitHub free-tier reliability
+on:
+  schedule:
+    - cron: '0 13 * * *'     # 6:30 PM IST (afternoon primary)
+    - cron: '30 13 * * *'    # 7:00 PM IST (afternoon backup)
+    - cron: '50 15 * * *'    # 9:20 PM IST (evening primary)
+    - cron: '20 16 * * *'    # 9:50 PM IST (evening backup)
+  workflow_dispatch:
+    inputs:
+      snapshot:
+        description: 'Snapshot type: afternoon or evening'
+        required: true
+        default: 'afternoon'
+
+permissions:
+  contents: write
+
+jobs:
+  resolution-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine snapshot type
+        id: snap
+        run: |
+          if [ "${{ github.event.inputs.snapshot }}" != "" ]; then
+            echo "type=${{ github.event.inputs.snapshot }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(TZ=Asia/Kolkata date +%H)
+            if [ "$HOUR" -lt 20 ]; then
+              echo "type=afternoon" >> $GITHUB_OUTPUT
+            else
+              echo "type=evening" >> $GITHUB_OUTPUT
+            fi
+          fi
+          echo "Snapshot type: $(cat $GITHUB_OUTPUT | grep type | cut -d= -f2)"
+
+      - name: Check if already captured
+        id: check
+        run: |
+          TODAY=$(TZ=Asia/Kolkata date +%Y-%m-%d)
+          SNAP="${{ steps.snap.outputs.type }}"
+          if git log --since="$TODAY 00:00:00" --pretty=%s | grep -q "Resolution snapshot: ${SNAP} ${TODAY}"; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Already captured ${SNAP} snapshot for ${TODAY}, skipping."
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Python
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        if: steps.check.outputs.skip != 'true'
+        run: pip install openpyxl
+
+      - name: Run resolution agent
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          MAX_ATTEMPTS=7
+          WAIT_SECONDS=300
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo ""
+            echo "=========================================="
+            echo "Attempt $attempt of $MAX_ATTEMPTS ($(TZ=Asia/Kolkata date '+%I:%M %p IST'))"
+            echo "=========================================="
+            if python run_resolution_agent.py --snapshot ${{ steps.snap.outputs.type }}; then
+              echo "SUCCESS on attempt $attempt!"
+              exit 0
+            fi
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "Waiting 5 minutes before next try..."
+              sleep $WAIT_SECONDS
+            fi
+          done
+          echo "FAILED: Email not found after $MAX_ATTEMPTS attempts."
+          exit 1
+
+      - name: Commit and push updated database
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          TODAY=$(TZ=Asia/Kolkata date +%Y-%m-%d)
+          SNAP="${{ steps.snap.outputs.type }}"
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt $attempt..."
+            git fetch origin main
+            git reset --soft origin/main
+            git add ticket_history.db
+            if git diff --cached --quiet; then
+              echo "Nothing to commit."
+              exit 0
+            fi
+            git commit -m "Resolution snapshot: ${SNAP} ${TODAY}"
+            if git push origin main; then
+              echo "Push succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "Push failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "Push failed after 5 attempts"
+          exit 1

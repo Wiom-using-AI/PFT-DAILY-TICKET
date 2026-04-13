@@ -215,6 +215,37 @@ def init_db():
         )
     """)
 
+    # Resolution tracking tables
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS resolution_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_date TEXT NOT NULL,
+            snapshot_type TEXT NOT NULL,
+            ticket_ids TEXT NOT NULL,
+            ticket_count INTEGER NOT NULL,
+            captured_at TEXT,
+            UNIQUE(report_date, snapshot_type)
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_resolution_date ON resolution_snapshots(report_date)")
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS resolution_daily (
+            report_date TEXT PRIMARY KEY,
+            morning_count INTEGER,
+            afternoon_count INTEGER,
+            evening_count INTEGER,
+            resolved_by_afternoon INTEGER,
+            resolved_by_evening INTEGER,
+            new_afternoon INTEGER,
+            new_evening INTEGER,
+            resolution_rate_afternoon REAL,
+            resolution_rate_evening REAL,
+            category_resolution TEXT,
+            computed_at TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -613,6 +644,10 @@ def cleanup_old_data():
     del_tickets = c.rowcount
     c.execute("DELETE FROM agent_assignments WHERE report_date < ?", (cutoff_7,))
     del_assign = c.rowcount
+
+    # Resolution tracking: keep 31 days
+    c.execute("DELETE FROM resolution_snapshots WHERE report_date < ?", (cutoff_31,))
+    c.execute("DELETE FROM resolution_daily WHERE report_date < ?", (cutoff_31,))
 
     # Clean expired new tickets cache (previous days)
     today = datetime.now(IST).strftime("%Y-%m-%d")
@@ -1407,6 +1442,174 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
         "available_queues": available_queues,
         "raw_data_dates": sorted(raw_dates),
     }
+
+
+# ---- Resolution Tracking Functions ----
+
+def save_resolution_snapshot(report_date_str, snapshot_type, ticket_ids_list, l3_map=None):
+    """
+    Save a resolution snapshot (morning/afternoon/evening) with ticket IDs.
+    l3_map = {"TKT001": "Internet Issues", "TKT002": "Others", ...} for category-level resolution.
+    """
+    import json
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""INSERT OR REPLACE INTO resolution_snapshots
+        (report_date, snapshot_type, ticket_ids, ticket_count, captured_at)
+        VALUES (?, ?, ?, ?, ?)""",
+        (report_date_str, snapshot_type, json.dumps(ticket_ids_list),
+         len(ticket_ids_list), datetime.now(IST).isoformat()))
+    # Also store L3 map if provided (for category-level resolution)
+    conn.commit()
+    conn.close()
+    print(f"[Resolution] Saved {snapshot_type} snapshot: {len(ticket_ids_list)} tickets for {report_date_str}")
+    # Recompute resolution rates
+    compute_resolution(report_date_str, l3_map)
+
+
+def compute_resolution(report_date_str, l3_map=None):
+    """Compute resolution rates by comparing morning vs afternoon/evening snapshots."""
+    import json
+    conn = get_connection()
+    c = conn.cursor()
+
+    snapshots = {}
+    c.execute("SELECT snapshot_type, ticket_ids, ticket_count FROM resolution_snapshots WHERE report_date = ?",
+              (report_date_str,))
+    for row in c.fetchall():
+        snapshots[row["snapshot_type"]] = {
+            "ids": set(json.loads(row["ticket_ids"])),
+            "count": row["ticket_count"]
+        }
+
+    if "morning" not in snapshots:
+        conn.close()
+        return
+
+    morning_ids = snapshots["morning"]["ids"]
+    morning_count = snapshots["morning"]["count"]
+
+    resolved_afternoon = resolved_evening = 0
+    new_afternoon = new_evening = 0
+    afternoon_count = evening_count = None
+    rate_afternoon = rate_evening = None
+
+    if "afternoon" in snapshots:
+        afternoon_ids = snapshots["afternoon"]["ids"]
+        afternoon_count = snapshots["afternoon"]["count"]
+        resolved_afternoon = len(morning_ids - afternoon_ids)
+        new_afternoon = len(afternoon_ids - morning_ids)
+        rate_afternoon = round(resolved_afternoon / morning_count * 100, 1) if morning_count > 0 else 0
+
+    if "evening" in snapshots:
+        evening_ids = snapshots["evening"]["ids"]
+        evening_count = snapshots["evening"]["count"]
+        resolved_evening = len(morning_ids - evening_ids)
+        new_evening = len(evening_ids - morning_ids)
+        rate_evening = round(resolved_evening / morning_count * 100, 1) if morning_count > 0 else 0
+
+    # Category-level resolution (if l3_map provided or can be built from full_report_history)
+    cat_resolution = None
+    if l3_map and ("afternoon" in snapshots or "evening" in snapshots):
+        cats = {}
+        for tid in morning_ids:
+            l3 = l3_map.get(tid, "(Unknown)")
+            if l3 not in cats:
+                cats[l3] = {"morning": 0, "resolved_afternoon": 0, "resolved_evening": 0}
+            cats[l3]["morning"] += 1
+        if "afternoon" in snapshots:
+            for tid in (morning_ids - snapshots["afternoon"]["ids"]):
+                l3 = l3_map.get(tid, "(Unknown)")
+                if l3 in cats:
+                    cats[l3]["resolved_afternoon"] += 1
+        if "evening" in snapshots:
+            for tid in (morning_ids - snapshots["evening"]["ids"]):
+                l3 = l3_map.get(tid, "(Unknown)")
+                if l3 in cats:
+                    cats[l3]["resolved_evening"] += 1
+        cat_resolution = json.dumps(cats)
+    else:
+        # Try building l3_map from full_report_history
+        c.execute("SELECT ticket_no, disposition_l3 FROM full_report_history WHERE report_date = ?",
+                  (report_date_str,))
+        db_l3_map = {r["ticket_no"]: r["disposition_l3"] for r in c.fetchall()}
+        if db_l3_map and ("afternoon" in snapshots or "evening" in snapshots):
+            cats = {}
+            for tid in morning_ids:
+                l3 = db_l3_map.get(tid, "(Unknown)")
+                if l3 not in cats:
+                    cats[l3] = {"morning": 0, "resolved_afternoon": 0, "resolved_evening": 0}
+                cats[l3]["morning"] += 1
+            if "afternoon" in snapshots:
+                for tid in (morning_ids - snapshots["afternoon"]["ids"]):
+                    l3 = db_l3_map.get(tid, "(Unknown)")
+                    if l3 in cats:
+                        cats[l3]["resolved_afternoon"] += 1
+            if "evening" in snapshots:
+                for tid in (morning_ids - snapshots["evening"]["ids"]):
+                    l3 = db_l3_map.get(tid, "(Unknown)")
+                    if l3 in cats:
+                        cats[l3]["resolved_evening"] += 1
+            cat_resolution = json.dumps(cats)
+
+    c.execute("""INSERT OR REPLACE INTO resolution_daily
+        (report_date, morning_count, afternoon_count, evening_count,
+         resolved_by_afternoon, resolved_by_evening,
+         new_afternoon, new_evening,
+         resolution_rate_afternoon, resolution_rate_evening,
+         category_resolution, computed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (report_date_str, morning_count, afternoon_count, evening_count,
+         resolved_afternoon, resolved_evening,
+         new_afternoon, new_evening,
+         rate_afternoon, rate_evening,
+         cat_resolution, datetime.now(IST).isoformat()))
+    conn.commit()
+    conn.close()
+    print(f"[Resolution] Computed: morning={morning_count}, resolved_afternoon={resolved_afternoon}, resolved_evening={resolved_evening}")
+
+
+def get_resolution_summary(report_date_str):
+    """Get resolution summary for a single date."""
+    import json
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM resolution_daily WHERE report_date = ?", (report_date_str,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    result = dict(row)
+    if result.get("category_resolution"):
+        try:
+            result["category_resolution"] = json.loads(result["category_resolution"])
+        except (json.JSONDecodeError, TypeError):
+            result["category_resolution"] = {}
+    return result
+
+
+def get_resolution_trend(date_from, date_to):
+    """Get resolution trend between two dates."""
+    import json
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""SELECT * FROM resolution_daily
+        WHERE report_date >= ? AND report_date <= ?
+        ORDER BY report_date ASC""", (date_from, date_to))
+    rows = []
+    for row in c.fetchall():
+        d = dict(row)
+        if d.get("category_resolution"):
+            try:
+                d["category_resolution"] = json.loads(d["category_resolution"])
+            except (json.JSONDecodeError, TypeError):
+                d["category_resolution"] = {}
+        rows.append(d)
+    conn.close()
+    return rows
 
 
 def get_tickets_for_download(report_date_str, l3_category=None, l4_category=None):
