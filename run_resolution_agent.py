@@ -135,9 +135,13 @@ def extract_ticket_ids_and_l3(xlsx_path):
     for row in ws.iter_rows(min_row=2, values_only=True):
         tid = str(row[ticket_col]).strip() if row[ticket_col] else None
         if tid:
+            l3_val = str(row[l3_col]).strip() if l3_col is not None and row[l3_col] else None
+            # Exclude Router Pickup tickets from resolution tracking
+            if l3_val and l3_val.lower() == "router pickup":
+                continue
             ticket_ids.append(tid)
-            if l3_col is not None and row[l3_col]:
-                l3_map[tid] = str(row[l3_col]).strip()
+            if l3_val:
+                l3_map[tid] = l3_val
     wb.close()
     return ticket_ids, l3_map
 
