@@ -889,8 +889,8 @@ def generate_dashboard_html():
 
       <h3 style="color:#1a1a2e;border-bottom:2px solid #f97316;padding-bottom:4px">&#127760; Deployment</h3>
       <ol start="54">
-        <li><b>Platform:</b> Vercel (auto-deploys from GitHub push)</li>
-        <li><b>URL:</b> pft-daily-ticket.vercel.app</li>
+        <li><b>Platform:</b> Railway (auto-deploys from GitHub push via Procfile)</li>
+        <li><b>Entry point:</b> python dashboard_server.py</li>
         <li><b>Database:</b> SQLite file stored in repo (via Git LFS for files &gt;100 MB)</li>
         <li><b>Local server:</b> Available via dashboard_server.py for local testing</li>
       </ol>

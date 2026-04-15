@@ -74,7 +74,7 @@
 53. **Buckets**: 0-12h, 12-24h, 24-36h, 36-48h, 48-72h, 72-120h, >120h
 
 ## Deployment
-54. **Platform**: Vercel (auto-deploys from GitHub push)
-55. **URL**: pft-daily-ticket.vercel.app
+54. **Platform**: Railway (auto-deploys from GitHub push via `Procfile`)
+55. **Entry point**: `python dashboard_server.py`
 56. **Database**: SQLite file stored in repo (via Git LFS for files >100 MB)
 57. **Local server**: Available via dashboard_server.py for local testing
