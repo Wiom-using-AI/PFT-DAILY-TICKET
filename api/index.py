@@ -476,6 +476,26 @@ def api_resolution_trend():
     return jsonify([])
 
 
+@app.route("/api/resolution-daily-trend")
+def api_resolution_daily_trend():
+    from history_db import get_resolution_daily_trend
+    date_from = request.args.get("from")
+    date_to = request.args.get("to")
+    if date_from and date_to:
+        return jsonify(get_resolution_daily_trend(date_from, date_to))
+    return jsonify({"dates": [], "metrics": {}})
+
+
+@app.route("/api/resolution-aging-trend")
+def api_resolution_aging_trend():
+    from history_db import get_resolution_aging_trend
+    date_from = request.args.get("from")
+    date_to = request.args.get("to")
+    if date_from and date_to:
+        return jsonify(get_resolution_aging_trend(date_from, date_to))
+    return jsonify({"dates": [], "buckets": {}})
+
+
 @app.route("/api/download-category-tickets")
 def api_download_category_tickets():
     date = request.args.get("date")

@@ -41,6 +41,8 @@ from history_db import (
     get_category_trend_chart,
     get_resolution_summary,
     get_resolution_trend,
+    get_resolution_daily_trend,
+    get_resolution_aging_trend,
     init_db,
     AGENT_LIST,
     get_agent_dates,
@@ -452,6 +454,20 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(get_resolution_trend(date_from, date_to))
             else:
                 self.send_json([])
+        elif path == "/api/resolution-daily-trend":
+            date_from = params.get("from", [None])[0]
+            date_to = params.get("to", [None])[0]
+            if date_from and date_to:
+                self.send_json(get_resolution_daily_trend(date_from, date_to))
+            else:
+                self.send_json({"dates": [], "metrics": {}})
+        elif path == "/api/resolution-aging-trend":
+            date_from = params.get("from", [None])[0]
+            date_to = params.get("to", [None])[0]
+            if date_from and date_to:
+                self.send_json(get_resolution_aging_trend(date_from, date_to))
+            else:
+                self.send_json({"dates": [], "buckets": {}})
         elif path == "/api/download-category-tickets":
             date = params.get("date", [None])[0]
             l3 = params.get("l3", [None])[0]
@@ -1105,6 +1121,8 @@ def generate_dashboard_html():
     </div>
   </div>
   <div id="resolutionCards" style="margin:16px 0"></div>
+  <div id="resolutionDailyTable" style="margin:16px 0"></div>
+  <div id="resolutionAgingTable" style="margin:16px 0"></div>
   <div id="resolutionTable" style="margin:12px 0"></div>
   <div style="height:280px;margin-top:12px"><canvas id="resolutionCanvas"></canvas></div>
   <p style="font-size:11px;color:#6b7280;margin-top:8px">Compares morning pending tickets against afternoon (6 PM) and evening (9 PM) reports. Tickets missing in later reports = resolved/closed.</p>
@@ -3798,6 +3816,10 @@ async function loadResolution(overrideFrom, overrideTo) {{
     if (trend.length > 1) {{
       renderResolutionChart(trend);
     }}
+
+    // Daily trend table + aging trend table
+    renderResolutionDailyTable(fromDate, toDate);
+    renderResolutionAgingTable(fromDate, toDate);
   }} catch(e) {{
     console.error('Resolution load error:', e);
   }}
@@ -3892,6 +3914,157 @@ function renderResolutionChart(trend) {{
     }},
   }});
 }}
+
+// Daily Trend Table for Resolution (dates as columns, metrics as rows)
+async function renderResolutionDailyTable(fromDate, toDate) {{
+  const el = document.getElementById('resolutionDailyTable');
+  if (!el) return;
+  try {{
+    const data = await api(`/api/resolution-daily-trend?from=${{fromDate}}&to=${{toDate}}`);
+    if (!data || !data.dates || !data.dates.length) {{
+      el.innerHTML = '';
+      return;
+    }}
+    const dates = data.dates, m = data.metrics;
+    const shortCol = ds => {{ const dt = new Date(ds+'T00:00:00'); return dt.toLocaleDateString('en-IN',{{day:'numeric',month:'short'}}); }};
+    const fmt = v => (v == null ? '—' : v.toLocaleString());
+    const fmtPct = v => (v == null ? '—' : v.toFixed(1)+'%');
+
+    let headerCells = `<th style="text-align:left;min-width:200px;position:sticky;left:0;background:#f0fdf4;z-index:2;padding:8px 12px">Metric</th>`;
+    dates.forEach(d => {{ headerCells += `<th style="text-align:center;min-width:90px;white-space:nowrap;font-size:11px;padding:8px 10px">${{shortCol(d)}}</th>`; }});
+
+    const rowDef = [
+      {{label: '&#128337; Morning Pending', key: 'morning', color: '#1e293b', bg: '#fff', pct: false}},
+      {{label: '&#9989; Resolved by 6 PM', key: 'resolved_6pm', color: '#16a34a', bg: '#fff', pct: 'rate_6pm'}},
+      {{label: '&#127919; Resolved by 9 PM', key: 'resolved_9pm', color: '#15803d', bg: '#fff', pct: 'rate_9pm'}},
+      {{label: '&#10133; New Tickets (by 6 PM)', key: 'new_6pm', color: '#d97706', bg: '#fff', pct: false}},
+      {{label: '&#10133; New Tickets (by 9 PM)', key: 'new_9pm', color: '#b45309', bg: '#fff', pct: false}},
+      {{label: '&#9888; Still Pending (EOD)', key: 'still_pending', color: '#dc2626', bg: '#fff', pct: false}},
+    ];
+
+    let bodyRows = '';
+    rowDef.forEach(r => {{
+      let cells = `<td style="position:sticky;left:0;background:${{r.bg}};z-index:1;white-space:nowrap;padding:8px 12px;font-weight:500;color:${{r.color}}">${{r.label}}</td>`;
+      dates.forEach(d => {{
+        const v = m[r.key] ? m[r.key][d] : null;
+        let pctHtml = '';
+        if (r.pct && m[r.pct] && m[r.pct][d] != null) {{
+          pctHtml = `<div style="font-size:9px;color:#94a3b8;font-weight:400">${{fmtPct(m[r.pct][d])}}</div>`;
+        }}
+        cells += `<td class="num" style="font-size:12px;padding:8px 10px;text-align:center;color:${{r.color}};font-weight:600">${{fmt(v)}}${{pctHtml}}</td>`;
+      }});
+      bodyRows += `<tr>${{cells}}</tr>`;
+    }});
+
+    el.innerHTML = `
+      <h4 style="margin:0 0 10px;font-size:13px;color:#166534">&#128202; Resolution Daily Trend</h4>
+      <div style="overflow-x:auto;border:1px solid #bbf7d0;border-radius:8px;background:#fff">
+        <table style="min-width:100%;border-collapse:collapse">
+          <thead><tr style="background:#f0fdf4;border-bottom:2px solid #bbf7d0">${{headerCells}}</tr></thead>
+          <tbody>${{bodyRows}}</tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:#6b7280;margin-top:6px">
+        Showing ${{dates.length}} day(s) &mdash; each cell shows metric value for that day
+      </div>`;
+  }} catch(e) {{
+    console.error('Resolution daily table error:', e);
+    el.innerHTML = '';
+  }}
+}}
+
+// Aging-wise Resolution Table (aging buckets as rows, dates as columns)
+async function renderResolutionAgingTable(fromDate, toDate) {{
+  const el = document.getElementById('resolutionAgingTable');
+  if (!el) return;
+  try {{
+    const data = await api(`/api/resolution-aging-trend?from=${{fromDate}}&to=${{toDate}}`);
+    if (!data || !data.dates || !data.dates.length) {{
+      el.innerHTML = '';
+      return;
+    }}
+    const dates = data.dates, buckets = data.buckets;
+    const bucketNames = ['< 4h', '4h - 12h', '12h - 24h', '24h - 36h', '36h - 48h', '48h - 72h', '72h - 120h', '> 120h'];
+    const bucketColors = ['#3b82f6', '#22c55e', '#84cc16', '#eab308', '#f97316', '#ef4444', '#a855f7', '#be123c'];
+    const shortCol = ds => {{ const dt = new Date(ds+'T00:00:00'); return dt.toLocaleDateString('en-IN',{{day:'numeric',month:'short'}}); }};
+    const fmt = v => (v == null || v === 0 ? '—' : v.toLocaleString());
+
+    // View toggle: morning | resolved_6pm | resolved_9pm
+    const viewKey = window._resAgingView || 'resolved_9pm';
+    const viewLabels = {{morning: 'Morning Pending', resolved_6pm: 'Resolved by 6 PM', resolved_9pm: 'Resolved by 9 PM'}};
+
+    let headerCells = `<th style="text-align:left;min-width:160px;position:sticky;left:0;background:#f0fdf4;z-index:2;padding:8px 12px">Aging Bucket</th>`;
+    dates.forEach(d => {{ headerCells += `<th style="text-align:center;min-width:90px;white-space:nowrap;font-size:11px;padding:8px 10px">${{shortCol(d)}}</th>`; }});
+
+    // Compute daily totals for % calculation (based on morning)
+    const dailyMorningTotals = {{}};
+    dates.forEach(d => {{
+      dailyMorningTotals[d] = bucketNames.reduce((s, b) => {{
+        return s + ((buckets[b] && buckets[b][d]) ? (buckets[b][d].morning || 0) : 0);
+      }}, 0);
+    }});
+
+    let bodyRows = '';
+    bucketNames.forEach((label, i) => {{
+      const color = bucketColors[i];
+      let cells = `<td style="position:sticky;left:0;background:#fff;z-index:1;white-space:nowrap;padding:8px 12px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${{color}};margin-right:6px"></span>${{label}}</td>`;
+      dates.forEach(d => {{
+        const bd = (buckets[label] && buckets[label][d]) ? buckets[label][d] : {{morning:0, resolved_6pm:0, resolved_9pm:0}};
+        const val = bd[viewKey] || 0;
+        const morn = bd.morning || 0;
+        let sub = '';
+        if (viewKey === 'morning') {{
+          const pct = dailyMorningTotals[d] > 0 ? (val/dailyMorningTotals[d]*100).toFixed(1) : 0;
+          sub = val > 0 ? `<div style="font-size:9px;color:#94a3b8;font-weight:400">${{pct}}%</div>` : '';
+        }} else {{
+          const pct = morn > 0 ? (val/morn*100).toFixed(1) : 0;
+          sub = morn > 0 ? `<div style="font-size:9px;color:#94a3b8;font-weight:400">${{pct}}% of ${{morn}}</div>` : '';
+        }}
+        cells += `<td class="num" style="font-size:11px;padding:6px 10px;text-align:center">${{fmt(val)}}${{sub}}</td>`;
+      }});
+      bodyRows += `<tr>${{cells}}</tr>`;
+    }});
+
+    // TOTAL row
+    let totalCells = `<td style="position:sticky;left:0;background:#f1f5f9;z-index:1;font-weight:700;padding:8px 12px">TOTAL</td>`;
+    dates.forEach(d => {{
+      const tot = bucketNames.reduce((s, b) => {{
+        const bd = (buckets[b] && buckets[b][d]) ? buckets[b][d] : null;
+        return s + (bd ? (bd[viewKey] || 0) : 0);
+      }}, 0);
+      totalCells += `<td class="num" style="font-weight:700;font-size:11px;padding:8px 10px;text-align:center">${{fmt(tot)}}</td>`;
+    }});
+
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 10px;flex-wrap:wrap;gap:8px">
+        <h4 style="margin:0;font-size:13px;color:#166534">&#9200; Resolution by Aging Bucket</h4>
+        <div style="display:flex;gap:4px">
+          <button onclick="setResAgingView('morning')" style="padding:3px 10px;border:1px solid #bbf7d0;border-radius:6px;background:${{viewKey==='morning'?'#bbf7d0':'#fff'}};cursor:pointer;font-size:11px;font-weight:${{viewKey==='morning'?'600':'400'}}">Morning</button>
+          <button onclick="setResAgingView('resolved_6pm')" style="padding:3px 10px;border:1px solid #bbf7d0;border-radius:6px;background:${{viewKey==='resolved_6pm'?'#bbf7d0':'#fff'}};cursor:pointer;font-size:11px;font-weight:${{viewKey==='resolved_6pm'?'600':'400'}}">Resolved 6 PM</button>
+          <button onclick="setResAgingView('resolved_9pm')" style="padding:3px 10px;border:1px solid #bbf7d0;border-radius:6px;background:${{viewKey==='resolved_9pm'?'#bbf7d0':'#fff'}};cursor:pointer;font-size:11px;font-weight:${{viewKey==='resolved_9pm'?'600':'400'}}">Resolved 9 PM</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto;border:1px solid #bbf7d0;border-radius:8px;background:#fff">
+        <table style="min-width:100%;border-collapse:collapse">
+          <thead><tr style="background:#f0fdf4;border-bottom:2px solid #bbf7d0">${{headerCells}}</tr></thead>
+          <tbody>${{bodyRows}}<tr style="border-top:2px solid #bbf7d0;background:#f1f5f9">${{totalCells}}</tr></tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:#6b7280;margin-top:6px">
+        Viewing: <strong>${{viewLabels[viewKey]}}</strong> &mdash; ${{viewKey==='morning' ? 'each cell shows count + % of daily total' : 'each cell shows resolved count + % of morning bucket'}}
+      </div>`;
+  }} catch(e) {{
+    console.error('Resolution aging table error:', e);
+    el.innerHTML = '';
+  }}
+}}
+
+window.setResAgingView = function(view) {{
+  window._resAgingView = view;
+  const from = document.getElementById('resFrom').value;
+  const to = document.getElementById('resTo').value;
+  if (from && to) renderResolutionAgingTable(from, to);
+}};
 
 init();
 </script>

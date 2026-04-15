@@ -1612,6 +1612,103 @@ def get_resolution_trend(date_from, date_to):
     return rows
 
 
+def get_resolution_daily_trend(date_from, date_to):
+    """
+    Daily trend of resolution metrics (dates as columns, metrics as rows).
+    Returns: {dates:[...], metrics: {metric_name: {date: value}}}
+    """
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""SELECT report_date, morning_count, afternoon_count, evening_count,
+                    resolved_by_afternoon, resolved_by_evening,
+                    new_afternoon, new_evening,
+                    resolution_rate_afternoon, resolution_rate_evening
+                 FROM resolution_daily
+                 WHERE report_date >= ? AND report_date <= ?
+                 ORDER BY report_date ASC""", (date_from, date_to))
+    rows = c.fetchall()
+    conn.close()
+    dates = [r["report_date"] for r in rows]
+    metrics = {"morning": {}, "resolved_6pm": {}, "resolved_9pm": {},
+               "new_6pm": {}, "new_9pm": {}, "still_pending": {},
+               "afternoon_count": {}, "evening_count": {},
+               "rate_6pm": {}, "rate_9pm": {}}
+    for r in rows:
+        d = r["report_date"]
+        mc = r["morning_count"] or 0
+        ac = r["afternoon_count"]
+        ec = r["evening_count"]
+        metrics["morning"][d] = mc
+        metrics["resolved_6pm"][d] = r["resolved_by_afternoon"]
+        metrics["resolved_9pm"][d] = r["resolved_by_evening"]
+        metrics["new_6pm"][d] = r["new_afternoon"]
+        metrics["new_9pm"][d] = r["new_evening"]
+        metrics["afternoon_count"][d] = ac
+        metrics["evening_count"][d] = ec
+        metrics["rate_6pm"][d] = r["resolution_rate_afternoon"]
+        metrics["rate_9pm"][d] = r["resolution_rate_evening"]
+        metrics["still_pending"][d] = ec if ec is not None else (ac if ac is not None else mc)
+    return {"dates": dates, "metrics": metrics}
+
+
+def get_resolution_aging_trend(date_from, date_to):
+    """
+    Aging-bucket wise resolution trend.
+    For each date+bucket: morning count and resolved counts (6PM and 9PM).
+    Returns: {dates:[...], buckets:{label:{date:{morning,resolved_6pm,resolved_9pm}}}}
+    """
+    import json
+    init_db()
+    conn = get_connection()
+    c = conn.cursor()
+
+    bucket_labels = ["< 4h", "4h - 12h", "12h - 24h", "24h - 36h",
+                     "36h - 48h", "48h - 72h", "72h - 120h", "> 120h"]
+    result_buckets = {b: {} for b in bucket_labels}
+
+    c.execute("""SELECT DISTINCT report_date FROM resolution_snapshots
+                 WHERE snapshot_type = 'morning'
+                   AND report_date >= ? AND report_date <= ?
+                 ORDER BY report_date ASC""", (date_from, date_to))
+    dates = [r["report_date"] for r in c.fetchall()]
+
+    for d in dates:
+        c.execute("""SELECT snapshot_type, ticket_ids FROM resolution_snapshots
+                     WHERE report_date = ?""", (d,))
+        snaps = {r["snapshot_type"]: set(json.loads(r["ticket_ids"])) for r in c.fetchall()}
+        if "morning" not in snaps:
+            continue
+        morning_ids = snaps["morning"]
+        aft_ids = snaps.get("afternoon")
+        eve_ids = snaps.get("evening")
+
+        if morning_ids:
+            placeholders = ",".join("?" for _ in morning_ids)
+            c.execute(f"""SELECT ticket_no, aging_bucket FROM full_report_history
+                          WHERE report_date = ? AND ticket_no IN ({placeholders})""",
+                      [d] + list(morning_ids))
+            bucket_map = {r["ticket_no"]: r["aging_bucket"] for r in c.fetchall()}
+        else:
+            bucket_map = {}
+
+        for b in bucket_labels:
+            result_buckets[b][d] = {"morning": 0, "resolved_6pm": 0, "resolved_9pm": 0}
+
+        for tid in morning_ids:
+            b = bucket_map.get(tid)
+            if not b or b not in result_buckets:
+                continue
+            result_buckets[b][d]["morning"] += 1
+            if aft_ids is not None and tid not in aft_ids:
+                result_buckets[b][d]["resolved_6pm"] += 1
+            if eve_ids is not None and tid not in eve_ids:
+                result_buckets[b][d]["resolved_9pm"] += 1
+
+    conn.close()
+    return {"dates": dates, "buckets": result_buckets}
+
+
 def get_tickets_for_download(report_date_str, l3_category=None, l4_category=None):
     """Get raw tickets for download, optionally filtered by L3 and/or L4 category."""
     init_db()
