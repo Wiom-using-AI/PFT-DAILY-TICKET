@@ -281,12 +281,11 @@ def main():
                 _tid = str(_r[_tid_idx]).strip() if _r[_tid_idx] else None
                 if _tid:
                     _l3_val = str(_r[_l3_idx2]).strip() if _r[_l3_idx2] else None
-                    # Exclude Router Pickup from resolution tracking
-                    if _l3_val and _l3_val.lower() == "router pickup":
+                    # Only track Internet Issues tickets (exclude Router Pickup and all other categories)
+                    if _l3_val != "Internet Issues":
                         continue
                     _morning_ids.append(_tid)
-                    if _l3_val:
-                        _morning_l3[_tid] = _l3_val
+                    _morning_l3[_tid] = _l3_val
             _wb2.close()
             save_resolution_snapshot(report_date, "morning", _morning_ids, _morning_l3)
             log(f"Morning resolution snapshot: {len(_morning_ids)} ticket IDs saved")
