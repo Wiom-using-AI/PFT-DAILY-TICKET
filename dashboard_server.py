@@ -2359,6 +2359,68 @@ function renderAging(s) {{
 // ========== AGING DAILY TREND ==========
 window._agingSelectedL3 = [];
 window._agingSelectedL4 = [];
+window._agingMetric = window._agingMetric || 'sum';
+
+window.AGING_METRICS = [
+  {{key:'sum',    label:'Sum'}},
+  {{key:'avg',    label:'Avg/day'}},
+  {{key:'max',    label:'Max (peak day)'}},
+  {{key:'min',    label:'Min (lowest day)'}},
+  {{key:'median', label:'Median'}},
+  {{key:'latest', label:'Latest day'}},
+  {{key:'delta',  label:'Δ Last − First'}},
+];
+
+window.computeAgingMetric = function(values, key) {{
+  if (!values || !values.length) return 0;
+  switch(key) {{
+    case 'sum':    return values.reduce((a,b)=>a+b,0);
+    case 'avg':    return values.reduce((a,b)=>a+b,0) / values.length;
+    case 'max':    return Math.max.apply(null, values);
+    case 'min':    return Math.min.apply(null, values);
+    case 'median': {{
+      const s = values.slice().sort((a,b)=>a-b);
+      const m = Math.floor(s.length/2);
+      return s.length%2 ? s[m] : (s[m-1]+s[m])/2;
+    }}
+    case 'latest': return values[values.length-1];
+    case 'delta':  return values[values.length-1] - values[0];
+    default:       return 0;
+  }}
+}};
+
+window.fmtAgingMetric = function(v, key) {{
+  if (v === null || v === undefined || isNaN(v)) return '—';
+  if (key === 'avg' || key === 'median') return v.toFixed(1);
+  if (key === 'delta') return (v>=0?'+':'') + v.toLocaleString();
+  return v.toLocaleString();
+}};
+
+window.applyAgingMetric = function() {{
+  const sel = document.getElementById('agingMetricSelect');
+  if (sel) window._agingMetric = sel.value;
+  const dates = window._agingTrendDates || [];
+  const buckets = window._agingTrendBuckets || {{}};
+  const mk = window._agingMetric;
+  // Refresh per-row metric cells (row metric doesn't depend on bucket visibility)
+  document.querySelectorAll('#agingTrendContent tr[data-agingrow]').forEach(row => {{
+    const label = row.getAttribute('data-agingrow');
+    const values = dates.map(d => (buckets[label] && buckets[label][d]) || 0);
+    const cell = row.querySelector('[data-rowmetric]');
+    if (cell) cell.textContent = fmtAgingMetric(computeAgingMetric(values, mk), mk);
+  }});
+  // Refresh TOTAL metric cell (depends on which buckets are visible)
+  const totalRow = document.querySelector('#agingTrendContent tr[data-agingtotalrow]');
+  if (totalRow) {{
+    const checkedInputs = document.querySelectorAll('#agingTrendDropdown input[data-agingtrend]:checked');
+    const checked = checkedInputs.length
+      ? Array.from(checkedInputs).map(c => c.getAttribute('data-agingtrend'))
+      : Object.keys(buckets);
+    const totalValues = dates.map(d => checked.reduce((s,b) => s + ((buckets[b] && buckets[b][d]) || 0), 0));
+    const cell = totalRow.querySelector('[data-totalmetric]');
+    if (cell) cell.textContent = fmtAgingMetric(computeAgingMetric(totalValues, mk), mk);
+  }}
+}};
 
 async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
   const container = document.getElementById('agingTrendContent');
@@ -2458,15 +2520,26 @@ async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
 
     function shortCol(ds) {{ const dt = new Date(ds+'T00:00:00'); return dt.toLocaleDateString('en-IN',{{day:'numeric',month:'short'}}); }}
 
+    const mk = window._agingMetric || 'sum';
+    let metricOptions = '';
+    AGING_METRICS.forEach(m => {{
+      metricOptions += `<option value="${{m.key}}" ${{m.key===mk?'selected':''}}>${{m.label}}</option>`;
+    }});
+
     let headerCells = `<th style="text-align:left;min-width:160px;position:sticky;left:0;background:#f8fafc;z-index:2">Aging Bucket</th>`;
     dates.forEach(d => {{ headerCells += `<th style="text-align:center;min-width:75px;white-space:nowrap;font-size:11px">${{shortCol(d)}}</th>`; }});
+    headerCells += `<th style="text-align:center;min-width:120px;background:#eef2ff;border-left:2px solid #c7d2fe;color:#3730a3;padding:4px 6px" title="Pick a summary metric — recomputed across the visible date range">
+      <select id="agingMetricSelect" onchange="applyAgingMetric()" style="font-size:11px;font-family:inherit;padding:2px 6px;border:1px solid #c7d2fe;border-radius:4px;background:#fff;cursor:pointer;font-weight:700;color:#3730a3">${{metricOptions}}</select>
+    </th>`;
 
     let bodyRows = '';
     bucketNames.forEach((label, i) => {{
       const color = BUCKET_COLORS[i];
       let cells = `<td style="position:sticky;left:0;background:#fff;z-index:1;white-space:nowrap"><span class="dot" style="background:${{color}}"></span>${{label}}</td>`;
+      const rowValues = [];
       dates.forEach(d => {{
         const count = (buckets[label]&&buckets[label][d])||0;
+        rowValues.push(count);
         const total = dailyTotals[d]||1;
         const pct = (count/total*100).toFixed(1);
         const dlUrl = `/api/download-filtered?date=${{d}}&bucket=${{encodeURIComponent(label)}}`;
@@ -2474,11 +2547,20 @@ async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
           ${{count > 0 ? count.toLocaleString() : '—'}}
           ${{count > 0 ? '<div style=\\"font-size:9px;color:#94a3b8;font-weight:400\\">' + pct + '%</div>' : ''}}</td>`;
       }});
+      const rowMetric = computeAgingMetric(rowValues, mk);
+      cells += `<td class="num" data-rowmetric style="font-size:11px;font-weight:700;background:#eef2ff;border-left:2px solid #c7d2fe;color:#3730a3">${{fmtAgingMetric(rowMetric, mk)}}</td>`;
       bodyRows += `<tr data-agingrow="${{label}}">${{cells}}</tr>`;
     }});
 
     let totalCells = `<td style="position:sticky;left:0;background:#f1f5f9;z-index:1;font-weight:700">TOTAL</td>`;
-    dates.forEach(d => {{ totalCells += `<td class="num" style="font-weight:700;font-size:11px">${{(dailyTotals[d]||0).toLocaleString()}}</td>`; }});
+    const totalValues = [];
+    dates.forEach(d => {{
+      const v = dailyTotals[d]||0;
+      totalValues.push(v);
+      totalCells += `<td class="num" style="font-weight:700;font-size:11px">${{v.toLocaleString()}}</td>`;
+    }});
+    const totalMetric = computeAgingMetric(totalValues, mk);
+    totalCells += `<td class="num" data-totalmetric style="font-weight:700;font-size:11px;background:#c7d2fe;border-left:2px solid #818cf8;color:#1e1b4b">${{fmtAgingMetric(totalMetric, mk)}}</td>`;
 
     container.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">${{l3Html}} ${{l4Html}}</div>
@@ -2486,11 +2568,11 @@ async function loadAgingDailyTrend(overrideFrom, overrideTo) {{
       <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">
         <table style="min-width:100%;border-collapse:collapse">
           <thead><tr style="background:#f8fafc;border-bottom:2px solid var(--border)">${{headerCells}}</tr></thead>
-          <tbody>${{bodyRows}}<tr style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr></tbody>
+          <tbody>${{bodyRows}}<tr data-agingtotalrow style="border-top:2px solid var(--border);background:#f1f5f9">${{totalCells}}</tr></tbody>
         </table>
       </div>
       <div style="font-size:11px;color:var(--text2);margin-top:6px">
-        Showing ${{dates.length}} day(s) from ${{shortCol(dates[0])}} to ${{shortCol(dates[dates.length-1])}} &mdash; each cell shows count + % of daily total
+        Showing ${{dates.length}} day(s) from ${{shortCol(dates[0])}} to ${{shortCol(dates[dates.length-1])}} &mdash; each cell shows count + % of daily total. Use the dropdown in the last column header to switch the summary metric (Sum, Avg/day, Max, Min, Median, Latest, Δ Last−First).
       </div>`;
 
     // Build bucket filter dropdown
@@ -2577,13 +2659,21 @@ window.filterAgingTrend = function() {{
     const buckets = window._agingTrendBuckets;
     const tds = totalRow.querySelectorAll('td');
 
+    const totalValuesF = [];
     dates.forEach((d, i) => {{
       let filteredTotal = 0;
       checked.forEach(b => {{
         filteredTotal += (buckets[b] && buckets[b][d]) || 0;
       }});
+      totalValuesF.push(filteredTotal);
       if (tds[i + 1]) tds[i + 1].textContent = filteredTotal.toLocaleString();
     }});
+    // Update TOTAL row's metric cell to reflect visible buckets + current metric
+    const totalMetricCell = totalRow.querySelector('[data-totalmetric]');
+    if (totalMetricCell) {{
+      const mk = window._agingMetric || 'sum';
+      totalMetricCell.textContent = fmtAgingMetric(computeAgingMetric(totalValuesF, mk), mk);
+    }}
 
     rows.forEach(row => {{
       if (row === totalRow || row.style.display === 'none') return;
