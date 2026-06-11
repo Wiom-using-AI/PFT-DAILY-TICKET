@@ -481,6 +481,18 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     writer = csv_mod.DictWriter(output, fieldnames=tickets[0].keys())
                     writer.writeheader()
                     writer.writerows(tickets)
+                else:
+                    writer = csv_mod.writer(output)
+                    writer.writerow(["Notice"])
+                    note_parts = [f"No ticket-level data found for date={date}"]
+                    if l3:
+                        note_parts.append(f"L3='{l3}'")
+                    if l4:
+                        note_parts.append(f"L4='{l4}'")
+                    note = ", ".join(note_parts)
+                    if l3 == "Router Pickup":
+                        note += " — Router Pickup is stored as a daily count only (not ticket-level)."
+                    writer.writerow([note])
                 parts = [date, (l3 or "all").replace(" ", "_")]
                 if l4:
                     parts.append(l4.replace(" ", "_"))
@@ -1768,8 +1780,13 @@ async function loadCategoryDailyTrend(overrideFrom, overrideTo) {{
         const count = categories[cat][d] || 0;
         const total = dailyTotals[d] || 1;
         const pct = (count / total * 100).toFixed(1);
-        const dlUrl = `/api/download-category-tickets?date=${{d}}&l3=${{encodeURIComponent(cat)}}`;
-        cells += `<td class="num" style="font-size:11px;cursor:pointer" title="Click to download ${{cat}} tickets for ${{d}}" onclick="window.location.href='${{dlUrl}}'">${{count > 0 ? pct + '%' : '—'}}</td>`;
+        const isRouter = cat === 'Router Pickup';
+        if (isRouter) {{
+          cells += `<td class="num" style="font-size:11px;color:#94a3b8;cursor:not-allowed" title="Router Pickup ticket-level data is not stored — only daily counts are kept">${{count > 0 ? pct + '%' : '—'}}</td>`;
+        }} else {{
+          const dlUrl = `/api/download-category-tickets?date=${{d}}&l3=${{encodeURIComponent(cat)}}`;
+          cells += `<td class="num" style="font-size:11px;cursor:pointer" title="Click to download ${{cat}} tickets for ${{d}}" onclick="window.location.href='${{dlUrl}}'">${{count > 0 ? pct + '%' : '—'}}</td>`;
+        }}
       }});
 
       bodyRows += `<tr data-catrow="${{catId}}" style="${{rowStyle}}">${{cells}}</tr>`;
@@ -1777,10 +1794,16 @@ async function loadCategoryDailyTrend(overrideFrom, overrideTo) {{
       bodyRows += `<!-- L4_PLACEHOLDER_${{catId}} -->`;
     }});
 
-    // TOTAL row with actual numbers
+    // TOTAL row with actual numbers — each cell is a clickable download (all tickets for that day, excluding Router Pickup)
     let totalCells = `<td style="position:sticky;left:0;background:#f1f5f9;z-index:1;font-weight:700">TOTAL</td>`;
     dates.forEach(d => {{
-      totalCells += `<td class="num" style="font-weight:700;font-size:11px">${{(dailyTotals[d] || 0).toLocaleString()}}</td>`;
+      const v = dailyTotals[d] || 0;
+      if (v > 0) {{
+        const dlUrl = `/api/download-category-tickets?date=${{d}}`;
+        totalCells += `<td class="num" style="font-weight:700;font-size:11px;cursor:pointer" title="Download all ticket-level rows for ${{d}} (Router Pickup excluded — see footnote)" onclick="window.location.href='${{dlUrl}}'"><span style="color:#1a73e8;border-bottom:1px dashed #1a73e8">${{v.toLocaleString()}}</span></td>`;
+      }} else {{
+        totalCells += `<td class="num" style="font-weight:700;font-size:11px">—</td>`;
+      }}
     }});
 
     const tableHtml = `
