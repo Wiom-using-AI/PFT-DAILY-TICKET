@@ -1719,8 +1719,12 @@ def get_tickets_for_download(report_date_str, l3_category=None, l4_category=None
     params = [report_date_str]
 
     if l3_category:
-        query += " AND disposition_l3 = ?"
-        params.append(l3_category)
+        if l3_category in ("Unknown", "(Unknown)"):
+            # UI label "Unknown" maps to rows where disposition_l3 is NULL or empty
+            query += " AND (disposition_l3 IS NULL OR disposition_l3 = '')"
+        else:
+            query += " AND disposition_l3 = ?"
+            params.append(l3_category)
 
     if l4_category:
         if l4_category == "(No L4)":
