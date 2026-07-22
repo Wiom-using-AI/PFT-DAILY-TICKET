@@ -1301,13 +1301,14 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
 
     for row in summary_rows:
         rd = row["report_date"]
-        dates.append(rd)
 
         if rd in raw_dates and (has_advanced_filters or group_by_l4):
             # Use raw data for this date (supports bucket/L4/queue filters)
+            dates.append(rd)
             continue  # Will be filled below
         elif len(queue_vals) > 0 and rd not in raw_dates:
             # Queue filter active but no raw data — use queue_category_breakdown from summary
+            dates.append(rd)
             qbd = json.loads(row["queue_category_breakdown"]) if row["queue_category_breakdown"] else {}
             for cat, queue_counts in qbd.items():
                 if l3_vals and cat not in l3_vals:
@@ -1318,8 +1319,16 @@ def get_category_trend_chart(date_from, date_to, bucket_filter=None, l3_filter=N
                     if cat not in categories:
                         categories[cat] = {}
                     categories[cat][rd] = total
+        elif (len(bucket_vals) > 0 or group_by_l4) and rd not in raw_dates:
+            # Aging bucket / L4 filter active but no raw data for this date.
+            # daily_summary only stores per-L3 totals, not L3 × bucket cross-tabs,
+            # so we cannot honor the filter for this date. Skip it entirely rather
+            # than falling through to the unfiltered L3 breakdown (which would show
+            # a misleading spike for older dates).
+            continue
         else:
-            # Use category_breakdown from daily_summary (L3 level only)
+            # No advanced filter — use category_breakdown from daily_summary (L3 level only)
+            dates.append(rd)
             breakdown = json.loads(row["category_breakdown"]) if row["category_breakdown"] else {}
             for cat, cnt in breakdown.items():
                 if l3_vals and cat not in l3_vals:
